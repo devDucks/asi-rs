@@ -160,7 +160,7 @@ fn check_error_code(code: i32) {
 
 fn main() {
     env_logger::init();
-    let lib = match Library::open("x64/libASICamera2.so") {
+    let lib = match Library::open("x64/libASICamera2.so.1.22") {
         Ok(so) => so,
         Err(e) => panic!("{}", e),
     };
@@ -202,7 +202,7 @@ fn main() {
     let close_camera: extern "C" fn(i32) -> i32 = unsafe { lib.symbol("ASICloseCamera") }.unwrap();
 
     fn expose(camera: i32) {
-        let lib = match Library::open("x64/libASICamera2.so") {
+        let lib = match Library::open("x64/libASICamera2.so.1.22") {
             Ok(so) => so,
             Err(e) => panic!("{}", e),
         };
@@ -224,12 +224,12 @@ fn main() {
         let mut status = Box::new(5);
         check_error_code(start_exposure(camera));
         check_error_code(exposure_status(camera, &mut *status));
-        println!("Status: {}", status);
+        debug!("Status: {}", status);
         thread::sleep(ten_millis);
 
         check_error_code(stop_exposure(camera));
         check_error_code(exposure_status(camera, &mut *status));
-        println!("Status2: {}", status);
+        debug!("Status2: {}", status);
 
         check_error_code(get_data(0, &mut *image_buffer, 1096 * 1936));
 
