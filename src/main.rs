@@ -402,8 +402,7 @@ fn main() {
         let mut buffer_size: i32 = format.width * format.height;
 
         buffer_size = match format.img_type {
-            1 => buffer_size * 3,
-            2 => buffer_size * 2,
+            1 | 2 => buffer_size * 2,
             _ => buffer_size,
         };
 
@@ -552,7 +551,7 @@ fn main() {
     let noc = get_num_of_controls(0);
     get_control_caps(0, noc);
     get_roi_format(0);
-    set_roi_format(0, 1936, 1096, 1, 0);
+    set_roi_format(0, 3008, 3008, 1, 0);
     get_roi_format(0);
     expose(0);
     check_error_code(close_camera(0));
