@@ -1,10 +1,20 @@
 use dlopen::raw::Library;
+use log::{debug, error, info};
+use rfitsio::fill_to_2880;
 use serde::ser::{Serialize, SerializeStruct};
 use serde::Serializer;
 
+use std::{thread, time};
+
+use crate::controls::AsiControlCaps;
 use crate::utils::{bayer_pattern, image_type, int_to_binning};
 
-struct Device {}
+pub struct Property {}
+
+pub struct Device {
+    info: AsiCameraInfo,
+    //properties: Vec<Property>
+}
 
 pub struct ROIFormat {
     pub width: i32,
@@ -111,11 +121,11 @@ impl Serialize for AsiCameraInfo {
     }
 }
 
-struct ZWOCCDManager {
-    name: &'static str,
-    shared_object: Library,
-    devices: Vec<Device>,
-    devices_discovered: i32,
+pub struct ZWOCCDManager {
+    pub name: &'static str,
+    pub shared_object: Library,
+    pub devices: Vec<Device>,
+    pub devices_discovered: i32,
 }
 
 pub mod utils {
@@ -248,27 +258,77 @@ pub mod controls {
     }
 }
 
-trait Manager {
-    fn new(&self, name: &'static str) -> Self;
+pub trait Manager {
+    fn new(name: &'static str) -> Self;
 
     // Look on the system for devices and return an integer
     // containing the number of devices found
-    fn look_for_devices(&self) -> i32;
+    fn look_for_devices(lib: &Library) -> i32;
 
     fn get_devices_properties(&self);
 
     fn init_provider(&self);
 
-    fn pointer_to_vault(&self) -> AsiCameraInfo;
+    fn get_info_struct(&self) -> AsiCameraInfo;
+
+    fn close(&self);
+
+    fn get_roi_format(&self, camera_id: i32) -> ROIFormat;
+
+    fn set_roi_format(&self, camera_id: i32, width: i32, height: i32, bin: i32, img_type: i32);
+
+    fn expose(&self, camera_id: i32, length: f32);
+}
+
+impl ZWOCCDManager {
+    pub fn get_num_of_controls(&self, camera_id: i32) -> i32 {
+        let get_num_of_controls: extern "C" fn(camera_id: i32, noc: *mut i32) -> i32 =
+            unsafe { self.shared_object.symbol("ASIGetNumOfControls") }.unwrap();
+        let mut num_of_controls = 0;
+        let result = get_num_of_controls(camera_id, &mut num_of_controls);
+        utils::check_error_code(result);
+        info!(
+            "Found: {} controls for camera {}",
+            num_of_controls, camera_id
+        );
+        num_of_controls
+    }
+
+    pub fn get_control_caps(&self, camera_id: i32, num_of_controls: i32) {
+        let get_contr_caps: extern "C" fn(
+            camera_id: i32,
+            index: i32,
+            noc: *mut AsiControlCaps,
+        ) -> i32 = unsafe { self.shared_object.symbol("ASIGetControlCaps") }.unwrap();
+
+        for i in 0..num_of_controls {
+            let mut control_caps = AsiControlCaps {
+                name: [0; 64],
+                description: [0; 128],
+                max_value: 0,
+                min_value: 0,
+                default_value: 0,
+                is_auto_supported: 0,
+                is_writable: 0,
+                control_type: 0,
+                unused: [0; 32],
+            };
+            utils::check_error_code(get_contr_caps(camera_id, i, &mut control_caps));
+            info!(
+                "Capability: {}",
+                serde_json::to_string(&control_caps).unwrap()
+            );
+        }
+    }
 }
 
 impl Manager for ZWOCCDManager {
-    fn new(&self, name: &'static str) -> ZWOCCDManager {
+    fn new(name: &'static str) -> ZWOCCDManager {
         let lib = match Library::open("libASICamera2.so") {
             Ok(so) => so,
             Err(e) => panic!("{}", e),
         };
-        let discovered_devices = self.look_for_devices();
+        let discovered_devices = Self::look_for_devices(&lib);
         let devices = usize::try_from(discovered_devices).unwrap();
 
         ZWOCCDManager {
@@ -279,7 +339,7 @@ impl Manager for ZWOCCDManager {
         }
     }
 
-    fn pointer_to_vault(&self) -> AsiCameraInfo {
+    fn get_info_struct(&self) -> AsiCameraInfo {
         return AsiCameraInfo {
             name: [0; 64],
             camera_id: 9, //this is used to control everything of the camera in other functions.Start from 0.
@@ -306,10 +366,12 @@ impl Manager for ZWOCCDManager {
         };
     }
 
-    fn look_for_devices(&self) -> i32 {
+    fn look_for_devices(lib: &Library) -> i32 {
         let look_for_devices: extern "C" fn() -> i32 =
-            unsafe { self.shared_object.symbol("ASIGetNumOfConnectedCameras") }.unwrap();
-        return look_for_devices();
+            unsafe { lib.symbol("ASIGetNumOfConnectedCameras") }.unwrap();
+        let num_of_devs = look_for_devices();
+        debug!("Found {} ZWO Cameras", num_of_devs);
+        num_of_devs
     }
 
     fn get_devices_properties(&self) {
@@ -317,11 +379,10 @@ impl Manager for ZWOCCDManager {
             unsafe { self.shared_object.symbol("ASIGetCameraProperty") }.unwrap();
 
         for index in 0..self.devices_discovered {
-            let mut vault = self.pointer_to_vault();
-            match read_device_properties(&mut vault, index) {
-                0 => println!("Properties retrieved correctly"),
-                e => panic!("Error happened: {}", e),
-            }
+            let mut info = self.get_info_struct();
+            utils::check_error_code(read_device_properties(&mut info, index));
+            let device = Device { info: info };
+            debug!("{}", serde_json::to_string_pretty(&device.info).unwrap());
         }
     }
 
@@ -331,8 +392,201 @@ impl Manager for ZWOCCDManager {
         let init_camera: extern "C" fn(i32) -> i32 =
             unsafe { self.shared_object.symbol("ASIInitCamera") }.unwrap();
         for index in 0..self.devices_discovered {
-            open_camera(index);
-            init_camera(index);
+            utils::check_error_code(open_camera(index));
+            utils::check_error_code(init_camera(index));
         }
+    }
+
+    fn close(&self) {
+        let close_camera: extern "C" fn(i32) -> i32 =
+            unsafe { self.shared_object.symbol("ASICloseCamera") }.unwrap();
+        for i in 0..self.devices_discovered {
+            debug!("Closing camera {}", i);
+            close_camera(i);
+        }
+        drop(&self.shared_object);
+    }
+
+    fn get_roi_format(&self, camera_id: i32) -> ROIFormat {
+        let _get_roi_format: extern "C" fn(
+            camera_id: i32,
+            width: &mut i32,
+            width: &mut i32,
+            bin: &mut i32,
+            img_type: &mut i32,
+        ) -> i32 = unsafe { self.shared_object.symbol("ASIGetROIFormat") }.unwrap();
+
+        let mut width = 0;
+        let mut height = 0;
+        let mut bin = 0;
+        let mut img_type = 0;
+
+        utils::check_error_code(_get_roi_format(
+            camera_id,
+            &mut width,
+            &mut height,
+            &mut bin,
+            &mut img_type,
+        ));
+        info!(
+            "ROI format => width: {} | height: {} | bin: {} | img type: {}",
+            width, height, bin, img_type
+        );
+
+        ROIFormat {
+            width: width,
+            height: height,
+            bin: bin,
+            img_type: img_type,
+        }
+    }
+
+    fn set_roi_format(&self, camera_id: i32, width: i32, height: i32, bin: i32, img_type: i32) {
+        let _set_roi_format: extern "C" fn(
+            camera_id: i32,
+            width: i32,
+            height: i32,
+            bin: i32,
+            img_type: i32,
+        ) -> i32 = unsafe { self.shared_object.symbol("ASISetROIFormat") }.unwrap();
+
+        utils::check_error_code(_set_roi_format(camera_id, width, height, bin, img_type));
+    }
+
+    fn expose(&self, camera_id: i32, seconds: f32) {
+        let start_exposure: extern "C" fn(camera_id: i32) -> i32 =
+            unsafe { self.shared_object.symbol("ASIStartExposure") }.unwrap();
+
+        let stop_exposure: extern "C" fn(camera_id: i32) -> i32 =
+            unsafe { self.shared_object.symbol("ASIStopExposure") }.unwrap();
+
+        let exposure_status: extern "C" fn(camera_id: i32, p_status: &mut i32) -> i32 =
+            unsafe { self.shared_object.symbol("ASIGetExpStatus") }.unwrap();
+
+        let get_data: extern "C" fn(camera_id: i32, &mut [u8], buf_size: i64) -> i32 =
+            unsafe { self.shared_object.symbol("ASIGetDataAfterExp") }.unwrap();
+
+        let format = self.get_roi_format(camera_id);
+        debug!("Actual width requested: {}", format.width);
+        debug!("Actual height requested: {}", format.height);
+
+        // Create the right sized buffer for the image to be stored.
+        // if we shoot at 8 bit it is just width * height
+        let mut buffer_size: i32 = format.width * format.height;
+
+        buffer_size = match format.img_type {
+            1 | 2 => buffer_size * 2,
+            _ => buffer_size,
+        };
+
+        let secs_to_micros = seconds * num::pow(10i32, 6) as f32;
+        debug!("mu secs {}", secs_to_micros);
+        let duration = time::Duration::from_micros(secs_to_micros as u64);
+        let mut image_buffer = Vec::with_capacity(buffer_size as usize);
+        unsafe {
+            image_buffer.set_len(buffer_size as usize);
+        }
+        let mut status = 5;
+        utils::check_error_code(start_exposure(camera_id));
+        utils::check_error_code(exposure_status(camera_id, &mut status));
+        debug!("Status: {}", status);
+        thread::sleep(duration);
+
+        utils::check_error_code(stop_exposure(camera_id));
+        utils::check_error_code(exposure_status(camera_id, &mut status));
+        debug!("Status2: {}", status);
+
+        utils::check_error_code(get_data(0, &mut image_buffer, buffer_size.into()));
+
+        let mut final_image: Vec<u8> = Vec::new();
+        for b in b"SIMPLE  =                    T / file conforms to FITS standard                 "
+            .into_iter()
+        {
+            final_image.push(*b);
+        }
+
+        let bitpix = match format.img_type {
+            1 | 2 => format!(
+                "BITPIX  =                   {} / number of bits per data pixel                  ",
+                "16"
+            ),
+            _ => format!(
+                "BITPIX  =                   {} / number of bits per data pixel                  ",
+                " 8"
+            ),
+        };
+
+        let mut naxis1 = String::new();
+        if format.width < 1000 {
+            naxis1 = format!(
+                "NAXIS1  =                 {}{} / length of data axis 1                          ",
+                " ", format.width
+            );
+        } else {
+            naxis1 = format!(
+                "NAXIS1  =                 {} / length of data axis 1                          ",
+                format.width
+            );
+        }
+
+        let mut naxis2 = String::new();
+        if format.height < 1000 {
+            naxis2 = format!(
+                "NAXIS2  =                 {}{} / length of data axis 2                          ",
+                " ", format.height
+            );
+        } else {
+            naxis2 = format!(
+                "NAXIS2  =                 {} / length of data axis 2                          ",
+                format.height
+            );
+        }
+
+        debug!("Len of NAXIS1 {}", naxis1.len());
+        debug!("Len of NAXIS2 {}", naxis2.len());
+
+        for b in bitpix.as_bytes().into_iter() {
+            final_image.push(*b);
+        }
+        for b in b"NAXIS   =                    2 / number of axis                                 "
+            .into_iter()
+        {
+            final_image.push(*b);
+        }
+        for b in naxis1.as_bytes().into_iter() {
+            final_image.push(*b);
+        }
+        for b in naxis2.as_bytes().into_iter() {
+            final_image.push(*b);
+        }
+
+        for b in b"END".into_iter() {
+            final_image.push(*b);
+        }
+
+        debug!("File len after headers: {}", final_image.len());
+
+        for _ in 0..fill_to_2880(final_image.len() as i32) {
+            final_image.push(32);
+        }
+
+        debug!("File len after filling: {}", final_image.len());
+
+        for b in &image_buffer {
+            final_image.push(*b);
+        }
+
+        debug!("File len after image: {}", final_image.len());
+
+        for _ in 0..fill_to_2880(final_image.len() as i32) {
+            final_image.push(32);
+        }
+
+        debug!("File len after filling image: {}", final_image.len());
+
+        match std::fs::write("zwo001.fits", &final_image) {
+            Ok(_) => debug!("FITS file saved correctly"),
+            Err(e) => error!("FITS file not saved on disk: {}", e),
+        };
     }
 }

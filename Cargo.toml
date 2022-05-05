@@ -10,7 +10,7 @@ dlopen = "0.1"
 libc = "0.2"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-serde-big-array = "0.4"
 env_logger = "0.9"
 log = "0.4"
 rfitsio = { git = "https://github.com/devducks/rfitsio", branch = "main" }
+num = "0.4"
