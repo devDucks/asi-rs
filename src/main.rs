@@ -1,239 +1,12 @@
 use log::{debug, error, info, log_enabled, Level};
-use serde::ser::{Serialize, SerializeStruct};
-use serde::Serializer;
 
 use dlopen::raw::Library;
 use rfitsio::fill_to_2880;
 use std::{thread, time};
 
-fn bayer_pattern(n: &i32) -> &'static str {
-    match n {
-        0 => return "RG",
-        1 => return "BG",
-        2 => return "GR",
-        3 => return "GB",
-        _ => panic!("Bayer pattern not recognized"),
-    }
-}
-
-fn image_type(n: i32) -> &'static str {
-    match n {
-        0 => return "RAW8",
-        1 => return "RGB24",
-        2 => return "RAW16",
-        3 => return "Y8",
-        -1 => return "END",
-        _ => panic!("Image type not supported"),
-    }
-}
-
-#[repr(C)]
-struct AsiCameraInfo {
-    //#[serde(with = "BigArray")]
-    name: [u8; 64],  //the name of the camera, you can display this to the UI
-    camera_id: i32, //this is used to control everything of the camera in other functions.Start from 0.
-    max_height: i64, //the max height of the camera
-    max_width: i64, //the max width of the camera
-    is_color_cam: i32,
-    bayer_pattern: i32,
-    supported_bins: [i32; 16], //1 means bin1 which is supported by every camera, 2 means bin 2 etc.. 0 is the end of supported binning method
-    supported_video_format: [i32; 8], //this array will content with the support output format type.IMG_END is the end of supported video format
-    pixel_size: f64,                  //the pixel size of the camera, unit is um. such like 5.6um
-    mechanical_shutter: i32,
-    st4_port: i32,
-    is_cooler_cam: i32,
-    is_usb3_host: i32,
-    is_usb3_camera: i32,
-    elec_per_adu: f32,
-    bit_depth: i32,
-    is_trigger_cam: i32,
-    unused: [u8; 16],
-}
-
-fn int_to_binning(n: &i32) -> String {
-    return format!("{}x{}", n, n);
-}
-
-impl Serialize for AsiCameraInfo {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        fn int_to_bool(n: &i32) -> bool {
-            match n {
-                0 => return false,
-                1 => return true,
-                _ => panic!("Not a boolean"),
-            }
-        }
-
-        let mut state = serializer.serialize_struct("AsiCameraInfo", 18)?;
-        let mut binning = Vec::with_capacity(16);
-        let mut name: Vec<u8> = Vec::with_capacity(64);
-        let mut unused: Vec<u8> = Vec::with_capacity(16);
-        let mut video_format: Vec<&'static str> = Vec::with_capacity(8);
-
-        // convert the binning array to an array of binning values
-        for el in self.supported_bins {
-            if el == 0 {
-                break;
-            } else {
-                binning.push(int_to_binning(&el));
-            }
-        }
-
-        // format the name dropping 0 from the name array
-        for el in self.name {
-            if el == 0 {
-                break;
-            } else {
-                name.push(el);
-            }
-        }
-
-        // format the unused dropping 0 from the unused array
-        for el in self.unused {
-            if el == 0 {
-                break;
-            } else {
-                unused.push(el);
-            }
-        }
-
-        // format the unused dropping 0 from the unused array
-        for el in self.supported_video_format {
-            if el == -1 {
-                break;
-            } else {
-                video_format.push(image_type(el));
-            }
-        }
-
-        state.serialize_field("name", std::str::from_utf8(&name).unwrap())?;
-        state.serialize_field("camera_id", &self.camera_id)?;
-        state.serialize_field("max_height", &self.max_height)?;
-        state.serialize_field("max_width", &self.max_width)?;
-        state.serialize_field("is_color_cam", &int_to_bool(&self.is_color_cam))?;
-        state.serialize_field("bayer_pattern", &bayer_pattern(&self.bayer_pattern))?;
-        state.serialize_field("supported_bins", &binning)?;
-        state.serialize_field("supported_video_format", &video_format)?;
-        state.serialize_field("pixel_size", &self.pixel_size)?;
-        state.serialize_field("mechanical_shutter", &int_to_bool(&self.mechanical_shutter))?;
-        state.serialize_field("st4_port", &int_to_bool(&self.st4_port))?;
-        state.serialize_field("is_usb3_host", &int_to_bool(&self.is_usb3_host))?;
-        state.serialize_field("is_usb3_camera", &int_to_bool(&self.is_usb3_camera))?;
-        state.serialize_field("elec_per_adu", &self.elec_per_adu)?;
-        state.serialize_field("bit_depth", &self.bit_depth)?;
-        state.serialize_field("is_trigger_camera", &int_to_bool(&self.is_trigger_cam))?;
-        state.serialize_field("unused", std::str::from_utf8(&unused).unwrap())?;
-        state.end()
-    }
-}
-
-#[repr(C)]
-struct AsiControlCaps {
-    //    #[serde(with = "BigArray")]
-    name: [u8; 64], //the name of the Control like Exposure, Gain etc..
-    //    #[serde(with = "BigArray")]
-    description: [u8; 128], //description of this control
-    max_value: i64,
-    min_value: i64,
-    default_value: i64,
-    is_auto_supported: i32, //support auto set 1, don't support 0
-    is_writable: i32,       //some control like temperature can only be read by some cameras
-    control_type: i32,      //this is used to get value and set value of the control
-    unused: [u8; 32],
-}
-
-impl Serialize for AsiControlCaps {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        fn int_to_bool(n: &i32) -> bool {
-            match n {
-                0 => return false,
-                1 => return true,
-                _ => panic!("Not a boolean"),
-            }
-        }
-
-        let mut state = serializer.serialize_struct("AsiControlCaps", 3)?;
-        let mut name: Vec<u8> = Vec::with_capacity(64);
-        let mut unused: Vec<u8> = Vec::with_capacity(32);
-        let mut description: Vec<u8> = Vec::with_capacity(128);
-
-        // format the name dropping 0 from the name array
-        for el in self.name {
-            if el == 0 {
-                break;
-            } else {
-                name.push(el);
-            }
-        }
-
-        // format the unused dropping 0 from the unused array
-        for el in self.unused {
-            if el == 0 {
-                break;
-            } else {
-                unused.push(el);
-            }
-        }
-
-        // format the unused dropping 0 from the unused array
-        for el in self.description {
-            if el == 0 {
-                break;
-            } else {
-                description.push(el);
-            }
-        }
-
-        state.serialize_field("name", std::str::from_utf8(&name).unwrap())?;
-        state.serialize_field("max_value", &self.max_value)?;
-        state.serialize_field("min_value", &self.min_value)?;
-        state.serialize_field("default_value", &self.default_value)?;
-        state.serialize_field("is_auto_supported", &int_to_bool(&self.is_auto_supported))?;
-        state.serialize_field("is_writable", &int_to_bool(&self.is_writable))?;
-        state.serialize_field("control_type", &self.control_type)?;
-        state.serialize_field("description", std::str::from_utf8(&description).unwrap())?;
-        state.serialize_field("unused", std::str::from_utf8(&unused).unwrap())?;
-        state.end()
-    }
-}
-
-fn check_error_code(code: i32) {
-    match code {
-        0 => (),                                       //ASI_SUCCESS
-        1 => panic!("ASI_ERROR_INVALID_INDEX"), //no camera connected or index value out of boundary
-        2 => panic!("ASI_ERROR_INVALID_ID"),    //invalid ID
-        3 => panic!("ASI_ERROR_INVALID_CONTROL_TYPE"), //invalid control type
-        4 => panic!("ASI_ERROR_CAMERA_CLOSED"), //camera didn't open
-        5 => panic!("ASI_ERROR_CAMERA_REMOVED"), //failed to find the camera, maybe the camera has been removed
-        6 => panic!("ASI_ERROR_INVALID_PATH"),   //cannot find the path of the file
-        7 => panic!("ASI_ERROR_INVALID_FILEFORMAT"),
-        8 => panic!("ASI_ERROR_INVALID_SIZE"), //wrong video format size
-        9 => panic!("ASI_ERROR_INVALID_IMGTYPE"), //unsupported image formate
-        10 => panic!("ASI_ERROR_OUTOF_BOUNDARY"), //the startpos is out of boundary
-        11 => panic!("ASI_ERROR_TIMEOUT"),     //timeout
-        12 => panic!("ASI_ERROR_INVALID_SEQUENCE"), //stop capture first
-        13 => panic!("ASI_ERROR_BUFFER_TOO_SMALL"), //buffer size is not big enough
-        14 => panic!("ASI_ERROR_VIDEO_MODE_ACTIVE"),
-        15 => panic!("ASI_ERROR_EXPOSURE_IN_PROGRESS"),
-        16 => panic!("ASI_ERROR_GENERAL_ERROR"), //general error, eg: value is out of valid range
-        17 => panic!("ASI_ERROR_INVALID_MODE"),  //the current mode is wrong
-        18 => panic!("ASI_ERROR_END"),
-        e => panic!("unknown error {}", e),
-    }
-}
-
-struct ROIFormat {
-    width: i32,
-    height: i32,
-    bin: i32,
-    img_type: i32,
-}
+use asi_rs::controls::AsiControlCaps;
+use asi_rs::utils::check_error_code;
+use asi_rs::{AsiCameraInfo, ROIFormat};
 
 fn main() {
     env_logger::init();
@@ -241,16 +14,16 @@ fn main() {
         Ok(so) => so,
         Err(e) => panic!("{}", e),
     };
-    let mut info = Box::new(AsiCameraInfo {
+    let mut info = AsiCameraInfo {
         name: [0; 64],
-        camera_id: 9, //this is used to control everything of the camera in other functions.Start from 0.
-        max_height: 0, //the max height of the camera
-        max_width: 0, //the max width of the camera
+        camera_id: 9,
+        max_height: 0,
+        max_width: 0,
         is_color_cam: 1,
         bayer_pattern: 1,
-        supported_bins: [5; 16], //1 means bin1 which is supported by every camera, 2 means bin 2 etc.. 0 is the end of supported binning method
-        supported_video_format: [0; 8], //this array will content with the support output format type.IMG_END is the end of supported video format
-        pixel_size: 0.0,                //the pixel size of the camera, unit is um. such like 5.6um
+        supported_bins: [0; 16],
+        supported_video_format: [0; 8],
+        pixel_size: 0.0,
         mechanical_shutter: 1,
         st4_port: 1,
         is_cooler_cam: 1,
@@ -260,9 +33,9 @@ fn main() {
         bit_depth: 0,
         is_trigger_cam: 1,
         unused: [0; 16],
-    });
+    };
 
-    let look_for_devices: extern "C" fn() -> i32 =
+    let look_for_devices: extern "C" fn() -> u8 =
         unsafe { lib.symbol("ASIGetNumOfConnectedCameras") }.unwrap();
 
     let read_device_properties: extern "C" fn(*mut AsiCameraInfo, i32) -> i32 =
@@ -337,11 +110,11 @@ fn main() {
 
         let get_num_of_controls: extern "C" fn(camera_id: i32, noc: *mut i32) -> i32 =
             unsafe { lib.symbol("ASIGetNumOfControls") }.unwrap();
-        let mut num_of_controls = Box::new(0);
-        let result = get_num_of_controls(camera_id, &mut *num_of_controls);
+        let mut num_of_controls = 0;
+        let result = get_num_of_controls(camera_id, &mut num_of_controls);
         check_error_code(result);
         info!("Found: {} controls", num_of_controls);
-        return *num_of_controls;
+        return num_of_controls;
     }
 
     fn get_control_caps(camera_id: i32, num_of_controls: i32) {
@@ -519,7 +292,7 @@ fn main() {
     let found_devices = look_for_devices();
     debug!("Found {} ZWO Cameras", found_devices);
 
-    check_error_code(read_device_properties(&mut *info, 0));
+    check_error_code(read_device_properties(&mut info, 0));
 
     if log_enabled!(Level::Debug) {
         debug!("Camera name: {}", std::str::from_utf8(&info.name).unwrap());
@@ -551,7 +324,7 @@ fn main() {
     let noc = get_num_of_controls(0);
     get_control_caps(0, noc);
     get_roi_format(0);
-    set_roi_format(0, 3008, 3008, 1, 0);
+    set_roi_format(0, 1936, 1096, 1, 0);
     get_roi_format(0);
     expose(0);
     check_error_code(close_camera(0));
