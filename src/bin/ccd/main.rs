@@ -1,6 +1,5 @@
-use tonic::{transport::Server, Request, Response, Status};
-
 use crate::ccd::utils::look_for_devices;
+use crate::ccd::AsiCcd;
 use lightspeed_astro::devices::actions::DeviceActions;
 use lightspeed_astro::devices::ProtoDevice;
 use lightspeed_astro::props::{SetPropertyRequest, SetPropertyResponse};
@@ -8,6 +7,7 @@ use lightspeed_astro::request::GetDevicesRequest;
 use lightspeed_astro::response::GetDevicesResponse;
 use lightspeed_astro::server::astro_service_server::{AstroService, AstroServiceServer};
 use log::{debug, error, info};
+use tonic::{transport::Server, Request, Response, Status};
 pub mod ccd;
 use astrotools::AstroSerialDevice;
 use ccd::CcdDevice;
@@ -128,11 +128,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "127.0.0.1:50051".parse().unwrap();
     let driver = AsiCcdDriver::new();
 
-    let devices = Arc::clone(&driver.devices);
+    let devices_for_fetching = Arc::clone(&driver.devices);
+    let devices_for_closing = Arc::clone(&driver.devices);
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(5)).await;
-            let mut devices_list = devices.lock().unwrap();
+            let mut devices_list = devices_for_fetching.lock().unwrap();
             for device in devices_list.iter_mut() {
                 device.fetch_props();
             }
@@ -143,7 +144,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Server::builder()
         .add_service(reflection_service)
         .add_service(AstroServiceServer::new(driver))
-        .serve(addr)
+        .serve_with_shutdown(addr, async move {
+            tokio::signal::ctrl_c().await;
+            debug!("shutting down requested, closing devices before quitting...");
+            let mut devices_list = devices_for_closing.lock().unwrap();
+            for device in devices_list.iter_mut() {
+                device.close();
+            }
+        })
         .await?;
     Ok(())
 }

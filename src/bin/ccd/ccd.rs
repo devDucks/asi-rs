@@ -276,18 +276,27 @@ impl AsiCcd for CcdDevice {
     fn init_provider(&self) {
         todo!();
     }
+
     fn close(&self) {
-        todo!();
+        let close_camera: extern "C" fn(i32) -> i32 =
+            unsafe { self.library.symbol("ASICloseCamera") }.unwrap();
+        debug!("Closing camera {}", self.index);
+        close_camera(self.index);
+        drop(&self.library);
     }
+
     fn get_control_caps(&self, camera_id: i32, num_of_controls: i32) {
         todo!();
     }
+
     fn get_num_of_controls(&self, camera_id: i32) -> i32 {
         todo!();
     }
+
     fn expose(&self, camera_id: i32, length: f32) -> Vec<u8> {
         todo!();
     }
+
     fn init_camera_props(&mut self) {
         let read_device_properties: extern "C" fn(*mut AsiCameraInfo, i32) -> i32 =
             unsafe { self.library.symbol("ASIGetCameraProperty") }.unwrap();
