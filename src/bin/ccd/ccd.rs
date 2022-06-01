@@ -1,4 +1,5 @@
 use crate::ccd::utils::structs::AsiCameraInfo;
+use crate::ccd::utils::structs::AsiControlCaps;
 use dlopen::raw::Library;
 use lightspeed_astro::devices::actions::DeviceActions;
 use lightspeed_astro::props::Property;
@@ -61,6 +62,7 @@ pub mod utils {
         }
 
         #[repr(C)]
+        #[derive(Debug)]
         pub struct AsiControlCaps {
             // The name of the Control like Exposure, Gain etc..
             pub name: [u8; 64],
@@ -79,8 +81,8 @@ pub mod utils {
         }
     }
 
-    pub fn new_asi_info() -> crate::ccd::AsiCameraInfo {
-        crate::ccd::AsiCameraInfo {
+    pub fn new_asi_info() -> crate::ccd::utils::structs::AsiCameraInfo {
+        crate::ccd::utils::structs::AsiCameraInfo {
             name: [0; 64],
             camera_id: 9,
             max_height: 0,
@@ -99,6 +101,20 @@ pub mod utils {
             bit_depth: 0,
             is_trigger_cam: 1,
             unused: [0; 16],
+        }
+    }
+
+    pub fn new_asi_controls_caps() -> crate::ccd::utils::structs::AsiControlCaps {
+        crate::ccd::utils::structs::AsiControlCaps {
+            name: [0; 64],
+            description: [0; 128],
+            max_value: 0,
+            min_value: 0,
+            default_value: 0,
+            is_auto_supported: 0,
+            is_writable: 0,
+            control_type: 0,
+            unused: [0; 32],
         }
     }
 
@@ -282,10 +298,23 @@ pub trait AstroDevice {
 pub trait AsiCcd {
     fn init_camera(&mut self);
     fn close(&self);
-    fn get_control_caps(&self, camera_id: i32, num_of_controls: i32);
+    fn get_control_caps(&mut self);
+    fn get_control_value(&self, cap: &AsiProperty) -> i64;
     fn get_num_of_controls(&self) -> i32;
     fn expose(&self, camera_id: i32, length: f32) -> Vec<u8>;
     fn init_camera_props(&mut self);
+}
+
+#[derive(Debug, Clone)]
+pub struct AsiProperty {
+    name: String,
+    description: String,
+    max_value: i64,
+    min_value: i64,
+    default_value: i64,
+    is_auto_supported: bool,
+    is_writable: bool,
+    control_type: i32,
 }
 
 pub struct CcdDevice {
@@ -295,6 +324,7 @@ pub struct CcdDevice {
     library: Library,
     index: i32,
     num_of_controls: i32,
+    caps: Vec<AsiProperty>,
 }
 
 impl AstroDevice for CcdDevice {
@@ -315,13 +345,31 @@ impl AstroDevice for CcdDevice {
             library: lib,
             index: index,
             num_of_controls: 0,
+            caps: Vec::new(),
         };
         device.init_camera_props();
         device.init_camera();
         device
     }
 
-    fn fetch_props(&mut self) {}
+    fn fetch_props(&mut self) {
+        info!("Fetching properties for device {}", self.name);
+        let mut props: Vec<Property> = Vec::new();
+
+        for cap in &self.caps {
+            self.get_control_value(cap);
+        }
+
+        if self.properties.is_empty() {
+            self.properties.extend(props);
+        } else {
+            for (idx, prop) in props.iter().enumerate() {
+                if self.properties[idx].value != prop.value {
+                    self.properties[idx].value = prop.value.to_owned();
+                }
+            }
+        }
+    }
 
     /// Use this method to return the id of the device as a uuid.
     fn get_id(&self) -> Uuid {
@@ -376,7 +424,37 @@ impl AsiCcd for CcdDevice {
         debug!("Saying welcome to camera `{}`", self.name);
         utils::check_error_code(open_camera(self.index));
         utils::check_error_code(init_camera(self.index));
+
+        // Check how many capabilities this camera has, reallocate the vector
+        // after the number is known
         self.num_of_controls = self.get_num_of_controls();
+        self.caps = Vec::with_capacity(self.num_of_controls as usize);
+
+        // Populate now the caps props as they won't change never during the camera's lifetime
+        self.get_control_caps();
+    }
+
+    fn get_control_value(&self, cap: &AsiProperty) -> i64 {
+        let get_ctrl_val: extern "C" fn(
+            camera_id: i32,
+            control_type: i32,
+            value: &mut i64,
+            is_auto_set: &mut i32,
+        ) -> i32 = unsafe { self.library.symbol("ASIGetControlValue") }.unwrap();
+        debug!("Getting value for prop {}", cap.name);
+        let mut is_auto_set = 0;
+        let mut val: i64 = 0;
+        utils::check_error_code(get_ctrl_val(
+            self.index,
+            cap.control_type,
+            &mut val,
+            &mut is_auto_set,
+        ));
+        info!(
+            "Value for {} is {} - Auto adjusted? {}",
+            cap.name, val, cap.is_writable
+        );
+        val
     }
 
     fn close(&self) {
@@ -387,8 +465,29 @@ impl AsiCcd for CcdDevice {
         drop(&self.library);
     }
 
-    fn get_control_caps(&self, _camera_id: i32, _num_of_controls: i32) {
-        todo!();
+    fn get_control_caps(&mut self) {
+        let get_contr_caps: extern "C" fn(
+            camera_id: i32,
+            index: i32,
+            noc: *mut AsiControlCaps,
+        ) -> i32 = unsafe { self.library.symbol("ASIGetControlCaps") }.unwrap();
+
+        for i in 0..self.num_of_controls {
+            let mut control_caps = utils::new_asi_controls_caps();
+            utils::check_error_code(get_contr_caps(self.index, i, &mut control_caps));
+            let cap = AsiProperty {
+                name: utils::asi_name_to_string(&control_caps.name),
+                description: utils::asi_name_to_string(&control_caps.description),
+                max_value: control_caps.max_value,
+                min_value: control_caps.min_value,
+                default_value: control_caps.default_value,
+                is_auto_supported: control_caps.is_auto_supported != 0,
+                is_writable: control_caps.is_writable != 0,
+                control_type: control_caps.control_type,
+            };
+            info!("Discovered capacity: {:?}", &cap.name);
+            self.caps.push(cap);
+        }
     }
 
     fn get_num_of_controls(&self) -> i32 {
