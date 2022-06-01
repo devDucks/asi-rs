@@ -2,7 +2,7 @@ use crate::ccd::utils::structs::AsiCameraInfo;
 use dlopen::raw::Library;
 use lightspeed_astro::devices::actions::DeviceActions;
 use lightspeed_astro::props::Property;
-use log::debug;
+use log::{debug, info};
 use uuid::Uuid;
 
 pub mod utils {
@@ -280,10 +280,10 @@ pub trait AstroDevice {
 }
 
 pub trait AsiCcd {
-    fn init_provider(&self);
+    fn init_camera(&mut self);
     fn close(&self);
     fn get_control_caps(&self, camera_id: i32, num_of_controls: i32);
-    fn get_num_of_controls(&self, camera_id: i32) -> i32;
+    fn get_num_of_controls(&self) -> i32;
     fn expose(&self, camera_id: i32, length: f32) -> Vec<u8>;
     fn init_camera_props(&mut self);
 }
@@ -294,6 +294,7 @@ pub struct CcdDevice {
     pub properties: Vec<Property>,
     library: Library,
     index: i32,
+    num_of_controls: i32,
 }
 
 impl AstroDevice for CcdDevice {
@@ -313,8 +314,10 @@ impl AstroDevice for CcdDevice {
             properties: Vec::new(),
             library: lib,
             index: index,
+            num_of_controls: 0,
         };
         device.init_camera_props();
+        device.init_camera();
         device
     }
 
@@ -365,14 +368,21 @@ impl AstroDevice for CcdDevice {
 }
 
 impl AsiCcd for CcdDevice {
-    fn init_provider(&self) {
-        todo!();
+    fn init_camera(&mut self) {
+        let open_camera: extern "C" fn(i32) -> i32 =
+            unsafe { self.library.symbol("ASIOpenCamera") }.unwrap();
+        let init_camera: extern "C" fn(i32) -> i32 =
+            unsafe { self.library.symbol("ASIInitCamera") }.unwrap();
+        debug!("Saying welcome to camera `{}`", self.name);
+        utils::check_error_code(open_camera(self.index));
+        utils::check_error_code(init_camera(self.index));
+        self.num_of_controls = self.get_num_of_controls();
     }
 
     fn close(&self) {
         let close_camera: extern "C" fn(i32) -> i32 =
             unsafe { self.library.symbol("ASICloseCamera") }.unwrap();
-        debug!("Closing camera {}", self.index);
+        debug!("Closing camera {}", self.name);
         close_camera(self.index);
         drop(&self.library);
     }
@@ -381,8 +391,17 @@ impl AsiCcd for CcdDevice {
         todo!();
     }
 
-    fn get_num_of_controls(&self, _camera_id: i32) -> i32 {
-        todo!();
+    fn get_num_of_controls(&self) -> i32 {
+        let get_num_of_controls: extern "C" fn(camera_id: i32, noc: *mut i32) -> i32 =
+            unsafe { self.library.symbol("ASIGetNumOfControls") }.unwrap();
+        let mut num_of_controls = 0;
+        let result = get_num_of_controls(self.index, &mut num_of_controls);
+        utils::check_error_code(result);
+        info!(
+            "Found: {} controls for camera {}",
+            num_of_controls, self.name
+        );
+        num_of_controls
     }
 
     fn expose(&self, _camera_id: i32, _length: f32) -> Vec<u8> {
@@ -398,6 +417,7 @@ impl AsiCcd for CcdDevice {
 
         // Name the device now
         self.name = utils::asi_name_to_string(&info.name);
+        self.index = info.camera_id;
 
         // 16 properties from AsiCameraInfo - unused and name are ignored
 
