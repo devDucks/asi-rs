@@ -9,13 +9,10 @@ use lightspeed_astro::server::astro_service_server::{AstroService, AstroServiceS
 use log::{debug, error, info};
 use tonic::{transport::Server, Request, Response, Status};
 pub mod ccd;
-use astrotools::AstroSerialDevice;
+use crate::ccd::AstroDevice;
 use ccd::CcdDevice;
 use env_logger::Env;
-
-use crate::ccd::AstroDevice;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[derive(Default, Clone)]
@@ -145,11 +142,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .add_service(reflection_service)
         .add_service(AstroServiceServer::new(driver))
         .serve_with_shutdown(addr, async move {
-            tokio::signal::ctrl_c().await;
-            debug!("shutting down requested, closing devices before quitting...");
-            let mut devices_list = devices_for_closing.lock().unwrap();
-            for device in devices_list.iter_mut() {
-                device.close();
+            match tokio::signal::ctrl_c().await {
+                Ok(_) => {
+                    debug!("shutting down requested, closing devices before quitting...");
+                    let mut devices_list = devices_for_closing.lock().unwrap();
+                    for device in devices_list.iter_mut() {
+                        device.close();
+                    }
+                }
+                Err(e) => error!("An error occurred while intercepting the shutdown: {}", e),
             }
         })
         .await?;
