@@ -429,17 +429,19 @@ impl AsiCcd for CcdDevice {
         for cap in &self.caps {
             info!("CAP name: {}", &cap.name);
             let mut cap_value = self.get_control_value(cap).to_string();
+            let mut kind_value = String::from("integer");
 
             if cap.name == "temperature" {
                 let tmp_value = cap_value.parse::<f32>().unwrap() / 10.0;
                 cap_value = tmp_value.to_string();
+                kind_value = String::from("float")
             }
 
             // here we create lightspeed properties from AsiCaps
             let prop = Property {
                 name: cap.name.to_owned(),
                 value: cap_value,
-                kind: "integer".to_string(),
+                kind: kind_value,
                 permission: cap.is_writable as i32,
             };
             props.push(prop);
