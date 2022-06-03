@@ -1,5 +1,6 @@
 use crate::ccd::utils::structs::AsiCameraInfo;
 use crate::ccd::utils::structs::AsiControlCaps;
+use convert_case::{Case, Casing};
 use dlopen::raw::Library;
 use lightspeed_astro::devices::actions::DeviceActions;
 use lightspeed_astro::props::Property;
@@ -303,6 +304,7 @@ pub trait AsiCcd {
     fn get_num_of_controls(&self) -> i32;
     fn expose(&self, camera_id: i32, length: f32) -> Vec<u8>;
     fn init_camera_props(&mut self);
+    fn asi_caps_to_lightspeed_props(&self) -> Vec<Property>;
 }
 
 #[derive(Debug, Clone)]
@@ -347,28 +349,13 @@ impl AstroDevice for CcdDevice {
             num_of_controls: 0,
             caps: Vec::new(),
         };
-        device.init_camera_props();
         device.init_camera();
+        device.init_camera_props();
         device
     }
 
     fn fetch_props(&mut self) {
         info!("Fetching properties for device {}", self.name);
-        let mut props: Vec<Property> = Vec::new();
-
-        for cap in &self.caps {
-            self.get_control_value(cap);
-        }
-
-        if self.properties.is_empty() {
-            self.properties.extend(props);
-        } else {
-            for (idx, prop) in props.iter().enumerate() {
-                if self.properties[idx].value != prop.value {
-                    self.properties[idx].value = prop.value.to_owned();
-                }
-            }
-        }
     }
 
     /// Use this method to return the id of the device as a uuid.
@@ -432,6 +419,32 @@ impl AsiCcd for CcdDevice {
 
         // Populate now the caps props as they won't change never during the camera's lifetime
         self.get_control_caps();
+
+        //
+    }
+
+    fn asi_caps_to_lightspeed_props(&self) -> Vec<Property> {
+        let mut props: Vec<Property> = Vec::new();
+
+        for cap in &self.caps {
+            info!("CAP name: {}", &cap.name);
+            let mut cap_value = self.get_control_value(cap).to_string();
+
+            if cap.name == "temperature" {
+                let tmp_value = cap_value.parse::<f32>().unwrap() / 10.0;
+                cap_value = tmp_value.to_string();
+            }
+
+            // here we create lightspeed properties from AsiCaps
+            let prop = Property {
+                name: cap.name.to_owned(),
+                value: cap_value,
+                kind: "integer".to_string(),
+                permission: cap.is_writable as i32,
+            };
+            props.push(prop);
+        }
+        props
     }
 
     fn get_control_value(&self, cap: &AsiProperty) -> i64 {
@@ -450,7 +463,7 @@ impl AsiCcd for CcdDevice {
             &mut val,
             &mut is_auto_set,
         ));
-        info!(
+        debug!(
             "Value for {} is {} - Auto adjusted? {}",
             cap.name, val, cap.is_writable
         );
@@ -476,7 +489,7 @@ impl AsiCcd for CcdDevice {
             let mut control_caps = utils::new_asi_controls_caps();
             utils::check_error_code(get_contr_caps(self.index, i, &mut control_caps));
             let cap = AsiProperty {
-                name: utils::asi_name_to_string(&control_caps.name),
+                name: utils::asi_name_to_string(&control_caps.name).to_case(Case::Snake),
                 description: utils::asi_name_to_string(&control_caps.description),
                 max_value: control_caps.max_value,
                 min_value: control_caps.min_value,
@@ -581,6 +594,10 @@ impl AsiCcd for CcdDevice {
             &info.bit_depth.to_string(),
             "integer",
         ));
+
+        for prop in self.asi_caps_to_lightspeed_props() {
+            self.properties.push(prop);
+        }
     }
 }
 
