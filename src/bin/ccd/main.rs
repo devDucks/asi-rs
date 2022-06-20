@@ -3,7 +3,7 @@ use crate::ccd::AsiCcd;
 use lightspeed_astro::devices::actions::DeviceActions;
 use lightspeed_astro::devices::ProtoDevice;
 use lightspeed_astro::props::{SetPropertyRequest, SetPropertyResponse};
-use lightspeed_astro::request::GetDevicesRequest;
+use lightspeed_astro::request::{CcdExposureRequest, CcdExposureResponse,GetDevicesRequest};
 use lightspeed_astro::response::GetDevicesResponse;
 use lightspeed_astro::server::astro_service_server::{AstroService, AstroServiceServer};
 use log::{debug, error, info};
@@ -12,12 +12,13 @@ pub mod ccd;
 use crate::ccd::AstroDevice;
 use ccd::CcdDevice;
 use env_logger::Env;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
+use tokio::task;
 
 #[derive(Default, Clone)]
 struct AsiCcdDriver {
-    devices: Arc<Mutex<Vec<CcdDevice>>>,
+    devices: Arc<RwLock<Vec<CcdDevice>>>,
 }
 
 impl AsiCcdDriver {
@@ -30,7 +31,7 @@ impl AsiCcdDriver {
             devices.push(device)
         }
         Self {
-            devices: Arc::new(Mutex::new(devices)),
+            devices: Arc::new(RwLock::new(devices)),
         }
     }
 }
@@ -46,17 +47,15 @@ impl AstroService for AsiCcdDriver {
             request.remote_addr()
         );
 
-        if self.devices.lock().unwrap().is_empty() {
+        if self.devices.read().unwrap().is_empty() {
             let reply = GetDevicesResponse { devices: vec![] };
             Ok(Response::new(reply))
         } else {
             let mut devices = Vec::new();
-            for device in self.devices.lock().unwrap().iter() {
+            for device in self.devices.read().unwrap().iter() {
                 let d = ProtoDevice {
                     id: device.get_id().to_string(),
                     name: device.get_name().to_owned(),
-                    address: "".to_string(),
-                    baud: 0,
                     family: 0,
                     properties: device.properties.to_owned(),
                 };
@@ -65,6 +64,28 @@ impl AstroService for AsiCcdDriver {
             let reply = GetDevicesResponse { devices: devices };
             Ok(Response::new(reply))
         }
+    }
+
+    async fn expose(
+        &self,
+        request: Request<CcdExposureRequest>,
+    ) -> Result<Response<CcdExposureResponse>, Status> {
+	info!("Asking to expose");
+	let message = request.get_ref();
+	let length = message.lenght.clone();
+	let dev_id = message.id.clone();
+	let devices  = self.devices.clone();
+	let res = task::spawn_blocking(move || {
+	    for device in devices.read().unwrap().iter() {
+		//if device.get_id().to_string() == dev_id {
+		    //device.expose(length);
+		std::thread::sleep(std::time::Duration::from_secs(length as u64));
+		//}
+	    }
+	}).await.unwrap();
+	info!("Task executed");
+	let reply = CcdExposureResponse { data: vec![] };
+        Ok(Response::new(reply))
     }
 
     async fn set_property(
@@ -85,7 +106,7 @@ impl AstroService for AsiCcdDriver {
         };
 
         // TODO: return case if no devices match
-        for d in self.devices.lock().unwrap().iter_mut() {
+        for d in self.devices.write().unwrap().iter_mut() {
             if d.get_id().to_string() == message.device_id {
                 info!(
                     "Updating property {} for {} to {}",
@@ -130,7 +151,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(5)).await;
-            let mut devices_list = devices_for_fetching.lock().unwrap();
+            let mut devices_list = devices_for_fetching.write().unwrap();
             for device in devices_list.iter_mut() {
                 device.fetch_props();
             }
@@ -145,7 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match tokio::signal::ctrl_c().await {
                 Ok(_) => {
                     debug!("shutting down requested, closing devices before quitting...");
-                    let mut devices_list = devices_for_closing.lock().unwrap();
+                    let mut devices_list = devices_for_closing.write().unwrap();
                     for device in devices_list.iter_mut() {
                         device.close();
                     }

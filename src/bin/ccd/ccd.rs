@@ -1,11 +1,11 @@
-use crate::ccd::utils::structs::AsiCameraInfo;
-use crate::ccd::utils::structs::AsiControlCaps;
+use crate::ccd::utils::structs::{AsiCameraInfo, AsiControlCaps, ROIFormat};
 use convert_case::{Case, Casing};
 use dlopen::raw::Library;
 use lightspeed_astro::devices::actions::DeviceActions;
 use lightspeed_astro::props::Property;
 use log::{debug, info};
 use uuid::Uuid;
+use std::{thread, time};
 
 pub mod utils {
     use dlopen::raw::Library;
@@ -143,6 +143,15 @@ pub mod utils {
         }
     }
 
+    pub fn new_read_write_prop(name: &str, value: &str, kind: &str) -> Property {
+        Property {
+            name: name.to_string(),
+            value: value.to_string(),
+            kind: kind.to_string(),
+            permission: Permission::ReadWrite as i32,
+        }
+    }
+
     pub fn check_error_code(code: i32) {
         match code {
             0 => (),                                       //ASI_SUCCESS
@@ -222,7 +231,24 @@ pub mod utils {
         representation
     }
 
-    /// Given an int returns a human readable representation of the image type
+    /// Given an integer returns a human friendly representation of the image_type
+    pub fn int_to_image_type(i: i32) -> String {
+        let s = match i {
+            0 => "RAW8",
+            1 => "RGB24",
+            2 => "RAW16",
+            3 => "Y8",
+            -1 => "END",
+            i => {
+                error!("Image type `{}` not supported", i);
+                "UNKNOWN"
+            }
+        };
+
+        s.to_string()
+    }
+
+    /// Given an array of integers returns a human readable representation of the image type
     pub fn int_to_image_type_array(array: &[i32]) -> String {
         let mut representation = String::new();
 
@@ -302,9 +328,14 @@ pub trait AsiCcd {
     fn get_control_caps(&mut self);
     fn get_control_value(&self, cap: &AsiProperty) -> i64;
     fn get_num_of_controls(&self) -> i32;
-    fn expose(&self, camera_id: i32, length: f32) -> Vec<u8>;
+    fn expose(&self, length: f32) -> Vec<u8>;
     fn init_camera_props(&mut self);
     fn asi_caps_to_lightspeed_props(&self) -> Vec<Property>;
+    fn fetch_roi_format(&mut self);
+    fn get_actual_width(&self) -> i32;
+    fn get_actual_height(&self) -> i32;
+    fn get_actual_bin(&self) -> String;
+    fn get_actual_img_type(&self) -> String;
 }
 
 #[derive(Debug, Clone)]
@@ -327,6 +358,7 @@ pub struct CcdDevice {
     index: i32,
     num_of_controls: i32,
     caps: Vec<AsiProperty>,
+    roi: ROIFormat,
 }
 
 impl AstroDevice for CcdDevice {
@@ -345,9 +377,15 @@ impl AstroDevice for CcdDevice {
             name: "".to_string(),
             properties: Vec::new(),
             library: lib,
-            index: index,
+            index,
             num_of_controls: 0,
             caps: Vec::new(),
+            roi: ROIFormat {
+                width: 0,
+                height: 0,
+                bin: 0,
+                img_type: 0,
+            },
         };
         device.init_camera();
         device.init_camera_props();
@@ -420,7 +458,8 @@ impl AsiCcd for CcdDevice {
         // Populate now the caps props as they won't change never during the camera's lifetime
         self.get_control_caps();
 
-        //
+        // Set the ROI
+	self.fetch_roi_format();
     }
 
     fn asi_caps_to_lightspeed_props(&self) -> Vec<Property> {
@@ -518,8 +557,53 @@ impl AsiCcd for CcdDevice {
         num_of_controls
     }
 
-    fn expose(&self, _camera_id: i32, _length: f32) -> Vec<u8> {
-        todo!();
+    fn expose(&self, length: f32) -> Vec<u8> {
+        let start_exposure: extern "C" fn(camera_id: i32) -> i32 =
+            unsafe { self.library.symbol("ASIStartExposure") }.unwrap();
+
+        let stop_exposure: extern "C" fn(camera_id: i32) -> i32 =
+            unsafe { self.library.symbol("ASIStopExposure") }.unwrap();
+
+        let exposure_status: extern "C" fn(camera_id: i32, p_status: &mut i32) -> i32 =
+            unsafe { self.library.symbol("ASIGetExpStatus") }.unwrap();
+
+        let get_data: extern "C" fn(camera_id: i32, &mut [u8], buf_size: i64) -> i32 =
+            unsafe { self.library.symbol("ASIGetDataAfterExp") }.unwrap();
+
+        info!("Actual width requested: {}", self.roi.width);
+        info!("Actual height requested: {}", self.roi.height);
+
+        // Create the right sized buffer for the image to be stored.
+        // if we shoot at 8 bit it is just width * height
+        let mut buffer_size: i32 = self.roi.width * self.roi.height;
+
+        buffer_size = match self.roi.img_type {
+            1 | 2 => buffer_size * 2,
+            _ => buffer_size,
+        };
+
+        let secs_to_micros = length * num::pow(10i32, 6) as f32;
+        info!("mu secs {}", secs_to_micros);
+        let duration = time::Duration::from_micros(secs_to_micros as u64);
+        let mut image_buffer = Vec::with_capacity(buffer_size as usize);
+        unsafe {
+            image_buffer.set_len(buffer_size as usize);
+        }
+        let mut status = 5;
+        utils::check_error_code(start_exposure(self.index));
+	let start = time::SystemTime::now();
+
+	while start.elapsed().unwrap().as_micros() < duration.as_micros() {
+            utils::check_error_code(exposure_status(self.index, &mut status));
+            debug!("Status: {}", status);
+	}
+
+        utils::check_error_code(stop_exposure(self.index));
+        utils::check_error_code(exposure_status(self.index, &mut status));
+        debug!("Status2: {}", status);
+
+        utils::check_error_code(get_data(0, &mut image_buffer, buffer_size.into()));
+	image_buffer
     }
 
     fn init_camera_props(&mut self) {
@@ -597,9 +681,87 @@ impl AsiCcd for CcdDevice {
             "integer",
         ));
 
+	// ROI data: width, height, bin, img type
+	self.properties.push(utils::new_read_write_prop(
+            "width",
+            &self.get_actual_width().to_string(),
+            "integer",
+        ));
+
+	self.properties.push(utils::new_read_write_prop(
+            "width",
+            &self.get_actual_height().to_string(),
+            "integer",
+        ));
+
+	self.properties.push(utils::new_read_write_prop(
+            "bin",
+            &self.get_actual_bin().to_string(),
+            "string",
+        ));
+
+	self.properties.push(utils::new_read_write_prop(
+            "image_type",
+            &self.get_actual_img_type().to_string(),
+            "string",
+        ));
+
+	// Properties to build logic around exposures
+	self.properties.push(utils::new_read_only_prop(
+            "exposing",
+            "false",
+            "boolean",
+        ));
+	
+
         for prop in self.asi_caps_to_lightspeed_props() {
             self.properties.push(prop);
         }
+    }
+
+    fn fetch_roi_format(&mut self) {
+        let _get_roi_format: extern "C" fn(
+            camera_id: i32,
+            width: &mut i32,
+            width: &mut i32,
+            bin: &mut i32,
+            img_type: &mut i32,
+        ) -> i32 = unsafe { self.library.symbol("ASIGetROIFormat") }.unwrap();
+
+        let mut width = 0;
+        let mut height = 0;
+        let mut bin = 0;
+        let mut img_type = 0;
+
+        utils::check_error_code(_get_roi_format(
+            self.index,
+            &mut width,
+            &mut height,
+            &mut bin,
+            &mut img_type,
+        ));
+        info!(
+            "ROI format => width: {} | height: {} | bin: {} | img type: {}",
+            width, height, bin, img_type
+        );
+
+	self.roi.width = width;
+        self.roi.height= height;
+        self.roi.bin = bin;
+        self.roi.img_type= img_type; 
+    }
+
+    fn get_actual_width(&self) -> i32 {
+        self.roi.width
+    }
+    fn get_actual_height(&self) -> i32 {
+        self.roi.height
+    }
+    fn get_actual_bin(&self) -> String {
+        utils::int_to_binning_str(&[self.roi.bin])
+    }
+    fn get_actual_img_type(&self) -> String {
+        utils::int_to_image_type(self.roi.img_type)
     }
 }
 
