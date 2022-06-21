@@ -3,7 +3,7 @@ use crate::ccd::AsiCcd;
 use lightspeed_astro::devices::actions::DeviceActions;
 use lightspeed_astro::devices::ProtoDevice;
 use lightspeed_astro::props::{SetPropertyRequest, SetPropertyResponse};
-use lightspeed_astro::request::{CcdExposureRequest, CcdExposureResponse,GetDevicesRequest};
+use lightspeed_astro::request::{CcdExposureRequest, CcdExposureResponse, GetDevicesRequest};
 use lightspeed_astro::response::GetDevicesResponse;
 use lightspeed_astro::server::astro_service_server::{AstroService, AstroServiceServer};
 use log::{debug, error, info};
@@ -18,20 +18,20 @@ use tokio::task;
 
 #[derive(Default, Clone)]
 struct AsiCcdDriver {
-    devices: Arc<RwLock<Vec<CcdDevice>>>,
+    devices: Arc<Vec<RwLock<CcdDevice>>>,
 }
 
 impl AsiCcdDriver {
     fn new() -> Self {
         let found = look_for_devices();
-        let mut devices: Vec<CcdDevice> = Vec::with_capacity(found as usize);
+        let mut devices: Vec<RwLock<CcdDevice>> = Vec::with_capacity(found as usize);
         for dev in 0..found {
             debug!("Trying to create a new device for index {}", dev);
-            let device = CcdDevice::new(dev);
+            let device = RwLock::new(CcdDevice::new(dev));
             devices.push(device)
         }
         Self {
-            devices: Arc::new(RwLock::new(devices)),
+            devices: Arc::new(devices),
         }
     }
 }
@@ -47,13 +47,14 @@ impl AstroService for AsiCcdDriver {
             request.remote_addr()
         );
 
-        if self.devices.read().unwrap().is_empty() {
+        if self.devices.is_empty() {
             let reply = GetDevicesResponse { devices: vec![] };
             Ok(Response::new(reply))
         } else {
             let mut devices = Vec::new();
-            for device in self.devices.read().unwrap().iter() {
-                let d = ProtoDevice {
+            for dev in self.devices.iter() {
+		let device = dev.read().unwrap();
+		let d = ProtoDevice {
                     id: device.get_id().to_string(),
                     name: device.get_name().to_owned(),
                     family: 0,
@@ -70,21 +71,22 @@ impl AstroService for AsiCcdDriver {
         &self,
         request: Request<CcdExposureRequest>,
     ) -> Result<Response<CcdExposureResponse>, Status> {
-	info!("Asking to expose");
-	let message = request.get_ref();
-	let length = message.lenght.clone();
-	let dev_id = message.id.clone();
-	let devices  = self.devices.clone();
-	let res = task::spawn_blocking(move || {
-	    for device in devices.read().unwrap().iter() {
-		//if device.get_id().to_string() == dev_id {
-		    //device.expose(length);
-		std::thread::sleep(std::time::Duration::from_secs(length as u64));
-		//}
-	    }
-	}).await.unwrap();
-	info!("Task executed");
-	let reply = CcdExposureResponse { data: vec![] };
+        info!("Asking to expose");
+        let message = request.get_ref();
+        let length = message.lenght.clone();
+        let dev_id = message.id.clone();
+        let devices = self.devices.clone();
+        task::spawn_blocking(move || {
+            for d in devices.iter() {
+		let mut device = d.write().unwrap();
+		if device.get_id().to_string() == dev_id {
+		    info!("Task dispatched");
+                    device.expose(length);
+                }
+            }
+        });
+        
+        let reply = CcdExposureResponse { data: vec![] };
         Ok(Response::new(reply))
     }
 
@@ -106,14 +108,15 @@ impl AstroService for AsiCcdDriver {
         };
 
         // TODO: return case if no devices match
-        for d in self.devices.write().unwrap().iter_mut() {
-            if d.get_id().to_string() == message.device_id {
+        for d in self.devices.iter() {
+	    let mut device = d.write().unwrap();
+            if device.get_id().to_string() == message.device_id {
                 info!(
                     "Updating property {} for {} to {}",
                     message.property_name, message.device_id, message.property_value,
                 );
 
-                if let Err(e) = d.update_property(&message.property_name, &message.property_value) {
+                if let Err(e) = device.update_property(&message.property_name, &message.property_value) {
                     info!(
                         "Updating property {} for {} failed with reason: {:?}",
                         message.property_name, message.device_id, e
@@ -151,8 +154,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(5)).await;
-            let mut devices_list = devices_for_fetching.write().unwrap();
-            for device in devices_list.iter_mut() {
+            for d in devices_for_fetching.iter() {
+		let mut device = d.write().unwrap();
                 device.fetch_props();
             }
         }
@@ -166,8 +169,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match tokio::signal::ctrl_c().await {
                 Ok(_) => {
                     debug!("shutting down requested, closing devices before quitting...");
-                    let mut devices_list = devices_for_closing.write().unwrap();
-                    for device in devices_list.iter_mut() {
+                    for d in devices_for_closing.iter() {
+			let device = d.write().unwrap();
                         device.close();
                     }
                 }
