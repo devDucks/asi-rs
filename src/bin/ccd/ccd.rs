@@ -4,14 +4,210 @@ use dlopen::raw::Library;
 use lightspeed_astro::devices::actions::DeviceActions;
 use lightspeed_astro::props::Property;
 use log::{debug, error, info};
+use rfitsio::fill_to_2880;
 use std::{thread, time};
 use uuid::Uuid;
-use rfitsio::fill_to_2880;
 
 pub mod utils {
     use dlopen::raw::Library;
     use lightspeed_astro::props::{Permission, Property};
     use log::{debug, error};
+
+    pub mod capturing {
+        use crate::ccd::AstroDevice;
+        use crate::ccd::ROIFormat;
+        use crate::CcdDevice;
+        use asi_rs::utils;
+        use dlopen::raw::Library;
+        use log::{debug, error, info};
+        use rfitsio::fill_to_2880;
+        use std::sync::{Arc, RwLock};
+        use std::time::Duration;
+        use std::time::SystemTime;
+
+        pub fn expose(
+            camera_index: i32,
+            length: f32,
+            width: i32,
+            height: i32,
+            img_type: i32,
+            device: Arc<RwLock<CcdDevice>>,
+        ) {
+            let lib = match Library::open("libASICamera2.so") {
+		Ok(so) => so,
+		Err(_) => panic!(
+                    "Couldn't find `libASICamera2.so` on the system, please make sure it is installed"
+		),
+            };
+            let start_exposure: extern "C" fn(camera_id: i32) -> i32 =
+                unsafe { lib.symbol("ASIStartExposure") }.unwrap();
+
+            let stop_exposure: extern "C" fn(camera_id: i32) -> i32 =
+                unsafe { lib.symbol("ASIStopExposure") }.unwrap();
+
+            let exposure_status: extern "C" fn(camera_id: i32, p_status: &mut i32) -> i32 =
+                unsafe { lib.symbol("ASIGetExpStatus") }.unwrap();
+
+            let get_data: extern "C" fn(camera_id: i32, &mut [u8], buf_size: i64) -> i32 =
+                unsafe { lib.symbol("ASIGetDataAfterExp") }.unwrap();
+
+            info!("Actual width requested: {}", width);
+            info!("Actual height requested: {}", height);
+
+            // Create the right sized buffer for the image to be stored.
+            // if we shoot at 8 bit it is just width * height
+            let mut buffer_size: i32 = width * height;
+
+            buffer_size = match img_type {
+                1 | 2 => buffer_size * 2,
+                _ => buffer_size,
+            };
+
+            let secs_to_micros = length * num::pow(10i32, 6) as f32;
+            info!("mu secs {}", secs_to_micros);
+            let duration = Duration::from_micros(secs_to_micros as u64);
+            let mut image_buffer = Vec::with_capacity(buffer_size as usize);
+            unsafe {
+                image_buffer.set_len(buffer_size as usize);
+            }
+            let mut status = 5;
+
+            // Swapping exposure related properties AKA prepare props to show
+            // informations about ongoing exposure
+            {
+                let mut d = device.write().unwrap();
+                d.update_internal_property("exposure_status", "EXPOSING");
+            }
+
+            utils::check_error_code(start_exposure(camera_index));
+            let start = SystemTime::now();
+
+            while start.elapsed().unwrap().as_micros() < duration.as_micros() {
+                debug!("Elapsed: {}", start.elapsed().unwrap().as_micros());
+                debug!("Duration: {}", duration.as_micros());
+                utils::check_error_code(exposure_status(camera_index, &mut status));
+                debug!("Status while exposing: {}", status);
+                match status {
+                    1 | 2 => (),
+                    n => error!("An error happened, the exposure status is {}", n),
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            utils::check_error_code(stop_exposure(camera_index));
+            utils::check_error_code(exposure_status(camera_index, &mut status));
+            info!("Status after exposure: {}", status);
+
+            match status {
+                2 => {
+                    {
+                        let mut d = device.write().unwrap();
+                        d.update_internal_property("exposure_status", "SUCCESS");
+                    }
+
+                    utils::check_error_code(get_data(
+                        camera_index,
+                        &mut image_buffer,
+                        buffer_size.into(),
+                    ));
+                }
+                _ => error!("Exposure failed"),
+            }
+
+            let mut final_image: Vec<u8> = Vec::new();
+            for b in
+                b"SIMPLE  =                    T / file conforms to FITS standard                 "
+                    .into_iter()
+            {
+                final_image.push(*b);
+            }
+
+            let bitpix = match img_type {
+		1 | 2 => format!(
+                    "BITPIX  =                   {} / number of bits per data pixel                  ",
+                    "16"
+		),
+		_ => format!(
+                    "BITPIX  =                   {} / number of bits per data pixel                  ",
+                    " 8"
+		),
+            };
+
+            let mut naxis1 = String::new();
+            if width < 1000 {
+                naxis1 = format!(
+                    "NAXIS1  =                 {}{} / length of data axis 1                          ",
+                    " ", width
+		);
+            } else {
+                naxis1 = format!(
+                    "NAXIS1  =                 {} / length of data axis 1                          ",
+                    width
+		);
+            }
+
+            let mut naxis2 = String::new();
+            if height < 1000 {
+                naxis2 = format!(
+                    "NAXIS2  =                 {}{} / length of data axis 2                          ",
+                    " ", height
+		);
+            } else {
+                naxis2 = format!(
+                    "NAXIS2  =                 {} / length of data axis 2                          ",
+                    height
+		);
+            }
+
+            debug!("Len of NAXIS1 {}", naxis1.len());
+            debug!("Len of NAXIS2 {}", naxis2.len());
+
+            for b in bitpix.as_bytes().into_iter() {
+                final_image.push(*b);
+            }
+            for b in
+                b"NAXIS   =                    2 / number of axis                                 "
+                    .into_iter()
+            {
+                final_image.push(*b);
+            }
+            for b in naxis1.as_bytes().into_iter() {
+                final_image.push(*b);
+            }
+            for b in naxis2.as_bytes().into_iter() {
+                final_image.push(*b);
+            }
+
+            for b in b"END".into_iter() {
+                final_image.push(*b);
+            }
+
+            debug!("File len after headers: {}", final_image.len());
+
+            for _ in 0..fill_to_2880(final_image.len() as i32) {
+                final_image.push(32);
+            }
+
+            debug!("File len after filling: {}", final_image.len());
+
+            for b in &image_buffer {
+                final_image.push(*b);
+            }
+
+            debug!("File len after image: {}", final_image.len());
+
+            for _ in 0..fill_to_2880(final_image.len() as i32) {
+                final_image.push(32);
+            }
+
+            debug!("File len after filling image: {}", final_image.len());
+
+            match std::fs::write("zwo001.fits", &final_image) {
+                Ok(_) => debug!("FITS file saved correctly"),
+                Err(e) => error!("FITS file not saved on disk: {}", e),
+            };
+        }
+    }
 
     pub mod structs {
         // The main structure of the ZWO library, this struct is passed to the C function
@@ -56,6 +252,7 @@ pub mod utils {
         }
 
         // struct the will be passed to the C function that stores the actual ROI set.
+        #[derive(Copy, Clone)]
         pub struct ROIFormat {
             pub width: i32,
             pub height: i32,
@@ -334,14 +531,16 @@ pub trait AsiCcd {
     fn get_control_caps(&mut self);
     fn get_control_value(&self, cap: &AsiProperty) -> i64;
     fn get_num_of_controls(&self) -> i32;
-    fn expose(&mut self, length: f32) -> Vec<u8>;
     fn init_camera_props(&mut self);
     fn asi_caps_to_lightspeed_props(&self) -> Vec<Property>;
     fn fetch_roi_format(&mut self);
     fn get_actual_width(&self) -> i32;
     fn get_actual_height(&self) -> i32;
     fn get_actual_bin(&self) -> String;
+    fn get_actual_raw_bin(&self) -> i32;
     fn get_actual_img_type(&self) -> String;
+    fn get_actual_raw_img_type(&self) -> i32;
+    fn get_index(&self) -> i32;
 }
 
 #[derive(Debug, Clone)]
@@ -477,6 +676,9 @@ impl AstroDevice for CcdDevice {
 }
 
 impl AsiCcd for CcdDevice {
+    fn get_index(&self) -> i32 {
+        self.index
+    }
     fn init_camera(&mut self) {
         let open_camera: extern "C" fn(i32) -> i32 =
             unsafe { self.library.symbol("ASIOpenCamera") }.unwrap();
@@ -496,6 +698,14 @@ impl AsiCcd for CcdDevice {
 
         // Set the ROI
         self.fetch_roi_format();
+    }
+
+    fn get_actual_raw_bin(&self) -> i32 {
+        self.roi.bin
+    }
+
+    fn get_actual_raw_img_type(&self) -> i32 {
+        self.roi.img_type
     }
 
     fn asi_caps_to_lightspeed_props(&self) -> Vec<Property> {
@@ -591,173 +801,6 @@ impl AsiCcd for CcdDevice {
             num_of_controls, self.name
         );
         num_of_controls
-    }
-
-    fn expose(&mut self, length: f32) -> Vec<u8> {
-        let start_exposure: extern "C" fn(camera_id: i32) -> i32 =
-            unsafe { self.library.symbol("ASIStartExposure") }.unwrap();
-
-        let stop_exposure: extern "C" fn(camera_id: i32) -> i32 =
-            unsafe { self.library.symbol("ASIStopExposure") }.unwrap();
-
-        let exposure_status: extern "C" fn(camera_id: i32, p_status: &mut i32) -> i32 =
-            unsafe { self.library.symbol("ASIGetExpStatus") }.unwrap();
-
-        let get_data: extern "C" fn(camera_id: i32, &mut [u8], buf_size: i64) -> i32 =
-            unsafe { self.library.symbol("ASIGetDataAfterExp") }.unwrap();
-
-        info!("Actual width requested: {}", self.roi.width);
-        info!("Actual height requested: {}", self.roi.height);
-
-        // Create the right sized buffer for the image to be stored.
-        // if we shoot at 8 bit it is just width * height
-        let mut buffer_size: i32 = self.roi.width * self.roi.height;
-
-        buffer_size = match self.roi.img_type {
-            1 | 2 => buffer_size * 2,
-            _ => buffer_size,
-        };
-
-        let secs_to_micros = length * num::pow(10i32, 6) as f32;
-        info!("mu secs {}", secs_to_micros);
-        let duration = time::Duration::from_micros(secs_to_micros as u64);
-        let mut image_buffer = Vec::with_capacity(buffer_size as usize);
-        unsafe {
-            image_buffer.set_len(buffer_size as usize);
-        }
-        let mut status = 5;
-
-        // Swapping exposure related properties AKA prepare props to show
-        // informations about ongoing exposure
-        self.update_internal_property("exposure_status", "EXPOSING");
-
-        utils::check_error_code(start_exposure(self.index));
-        let start = time::SystemTime::now();
-
-        while start.elapsed().unwrap().as_micros() < duration.as_micros() {
-            debug!("Elapsed: {}", start.elapsed().unwrap().as_micros());
-            debug!("Duration: {}", duration.as_micros());
-            utils::check_error_code(exposure_status(self.index, &mut status));
-            debug!("Status while exposing: {}", status);
-            match status {
-                1 | 2 => (),
-                n => error!("An error happened, the exposure status is {}", n),
-            }
-
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        utils::check_error_code(stop_exposure(self.index));
-        utils::check_error_code(exposure_status(self.index, &mut status));
-        info!("Status after exposure: {}", status);
-
-        match status {
-            2 => {
-                self.update_internal_property("exposure_status", "SUCCESS");
-                utils::check_error_code(get_data(
-                    self.index,
-                    &mut image_buffer,
-                    buffer_size.into(),
-                ));
-            }
-            _ => error!("Exposure failed"),
-        }
-
-        {
-            let mut final_image: Vec<u8> = Vec::new();
-            for b in
-                b"SIMPLE  =                    T / file conforms to FITS standard                 "
-                    .into_iter()
-            {
-                final_image.push(*b);
-            }
-
-            let bitpix = match self.roi.img_type {
-		1 | 2 => format!(
-                    "BITPIX  =                   {} / number of bits per data pixel                  ",
-                    "16"
-		),
-		_ => format!(
-                    "BITPIX  =                   {} / number of bits per data pixel                  ",
-                    " 8"
-		),
-            };
-
-            let mut naxis1 = String::new();
-            if self.roi.width < 1000 {
-                naxis1 = format!(
-                    "NAXIS1  =                 {}{} / length of data axis 1                          ",
-                    " ", self.roi.width
-		);
-            } else {
-                naxis1 = format!(
-                    "NAXIS1  =                 {} / length of data axis 1                          ",
-                    self.roi.width
-		);
-            }
-
-            let mut naxis2 = String::new();
-            if self.roi.height < 1000 {
-                naxis2 = format!(
-                    "NAXIS2  =                 {}{} / length of data axis 2                          ",
-                    " ", self.roi.height
-		);
-            } else {
-                naxis2 = format!(
-                    "NAXIS2  =                 {} / length of data axis 2                          ",
-                    self.roi.height
-		);
-            }
-
-            debug!("Len of NAXIS1 {}", naxis1.len());
-            debug!("Len of NAXIS2 {}", naxis2.len());
-
-            for b in bitpix.as_bytes().into_iter() {
-                final_image.push(*b);
-            }
-            for b in
-                b"NAXIS   =                    2 / number of axis                                 "
-                    .into_iter()
-            {
-                final_image.push(*b);
-            }
-            for b in naxis1.as_bytes().into_iter() {
-                final_image.push(*b);
-            }
-            for b in naxis2.as_bytes().into_iter() {
-                final_image.push(*b);
-            }
-
-            for b in b"END".into_iter() {
-                final_image.push(*b);
-            }
-
-            debug!("File len after headers: {}", final_image.len());
-
-            for _ in 0..fill_to_2880(final_image.len() as i32) {
-                final_image.push(32);
-            }
-
-            debug!("File len after filling: {}", final_image.len());
-
-            for b in &image_buffer {
-                final_image.push(*b);
-            }
-
-            debug!("File len after image: {}", final_image.len());
-
-            for _ in 0..fill_to_2880(final_image.len() as i32) {
-                final_image.push(32);
-            }
-
-            debug!("File len after filling image: {}", final_image.len());
-
-            match std::fs::write("zwo001.fits", &final_image) {
-                Ok(_) => debug!("FITS file saved correctly"),
-                Err(e) => error!("FITS file not saved on disk: {}", e),
-            };
-        }
-
-        image_buffer
     }
 
     fn init_camera_props(&mut self) {

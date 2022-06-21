@@ -10,6 +10,7 @@ use log::{debug, error, info};
 use tonic::{transport::Server, Request, Response, Status};
 pub mod ccd;
 use crate::ccd::AstroDevice;
+use ccd::utils;
 use ccd::CcdDevice;
 use env_logger::Env;
 use std::sync::{Arc, Mutex, RwLock};
@@ -18,21 +19,19 @@ use tokio::task;
 
 #[derive(Default, Clone)]
 struct AsiCcdDriver {
-    devices: Arc<Vec<RwLock<CcdDevice>>>,
+    devices: Vec<Arc<RwLock<CcdDevice>>>,
 }
 
 impl AsiCcdDriver {
     fn new() -> Self {
         let found = look_for_devices();
-        let mut devices: Vec<RwLock<CcdDevice>> = Vec::with_capacity(found as usize);
+        let mut devices: Vec<Arc<RwLock<CcdDevice>>> = Vec::with_capacity(found as usize);
         for dev in 0..found {
             debug!("Trying to create a new device for index {}", dev);
-            let device = RwLock::new(CcdDevice::new(dev));
+            let device = Arc::new(RwLock::new(CcdDevice::new(dev)));
             devices.push(device)
         }
-        Self {
-            devices: Arc::new(devices),
-        }
+        Self { devices: devices }
     }
 }
 
@@ -53,8 +52,8 @@ impl AstroService for AsiCcdDriver {
         } else {
             let mut devices = Vec::new();
             for dev in self.devices.iter() {
-		let device = dev.read().unwrap();
-		let d = ProtoDevice {
+                let device = dev.read().unwrap();
+                let d = ProtoDevice {
                     id: device.get_id().to_string(),
                     name: device.get_name().to_owned(),
                     family: 0,
@@ -71,21 +70,33 @@ impl AstroService for AsiCcdDriver {
         &self,
         request: Request<CcdExposureRequest>,
     ) -> Result<Response<CcdExposureResponse>, Status> {
-        info!("Asking to expose");
         let message = request.get_ref();
         let length = message.lenght.clone();
         let dev_id = message.id.clone();
         let devices = self.devices.clone();
-        task::spawn_blocking(move || {
-            for d in devices.iter() {
-		let mut device = d.write().unwrap();
-		if device.get_id().to_string() == dev_id {
-		    info!("Task dispatched");
-                    device.expose(length);
+
+        for d in devices.iter() {
+            let device = Arc::clone(d);
+
+            {
+                let device = d.read().unwrap();
+                let index = device.get_index().clone();
+                let length = length.clone();
+                let width = device.get_actual_width();
+                let height = device.get_actual_height();
+                let img_type = device.get_actual_raw_img_type();
+                let d2 = Arc::clone(d);
+
+                if device.get_id().to_string() == dev_id {
+                    info!("Task dispatching in a new thread...");
+                    task::spawn_blocking(move || {
+                        utils::capturing::expose(index, length, width, height, img_type, d2);
+                        info!("Task ended");
+                    });
                 }
             }
-        });
-        
+        }
+
         let reply = CcdExposureResponse { data: vec![] };
         Ok(Response::new(reply))
     }
@@ -109,14 +120,16 @@ impl AstroService for AsiCcdDriver {
 
         // TODO: return case if no devices match
         for d in self.devices.iter() {
-	    let mut device = d.write().unwrap();
+            let mut device = d.write().unwrap();
             if device.get_id().to_string() == message.device_id {
                 info!(
                     "Updating property {} for {} to {}",
                     message.property_name, message.device_id, message.property_value,
                 );
 
-                if let Err(e) = device.update_property(&message.property_name, &message.property_value) {
+                if let Err(e) =
+                    device.update_property(&message.property_name, &message.property_value)
+                {
                     info!(
                         "Updating property {} for {} failed with reason: {:?}",
                         message.property_name, message.device_id, e
@@ -149,17 +162,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "127.0.0.1:50051".parse().unwrap();
     let driver = AsiCcdDriver::new();
 
-    let devices_for_fetching = Arc::clone(&driver.devices);
-    let devices_for_closing = Arc::clone(&driver.devices);
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            for d in devices_for_fetching.iter() {
-		let mut device = d.write().unwrap();
-                device.fetch_props();
+    let mut devices_for_fetching = Vec::new();
+    let mut devices_for_closing = Vec::new();
+    for d in &driver.devices {
+        devices_for_fetching.push(Arc::clone(d));
+        devices_for_closing.push(Arc::clone(d));
+    }
+
+    for d in &devices_for_fetching {
+        let device = Arc::clone(d);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                device.write().unwrap().fetch_props();
             }
-        }
-    });
+        });
+    }
 
     info!("ZWOASIDriver process listening on {}", addr);
     Server::builder()
@@ -169,8 +187,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match tokio::signal::ctrl_c().await {
                 Ok(_) => {
                     debug!("shutting down requested, closing devices before quitting...");
-                    for d in devices_for_closing.iter() {
-			let device = d.write().unwrap();
+                    for d in devices_for_closing.iter_mut() {
+                        let device = d.write().unwrap();
                         device.close();
                     }
                 }
