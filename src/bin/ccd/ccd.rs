@@ -1,16 +1,213 @@
-use crate::ccd::utils::structs::AsiCameraInfo;
-use crate::ccd::utils::structs::AsiControlCaps;
+use crate::ccd::utils::structs::{AsiCameraInfo, AsiControlCaps, ROIFormat};
 use convert_case::{Case, Casing};
 use dlopen::raw::Library;
 use lightspeed_astro::devices::actions::DeviceActions;
 use lightspeed_astro::props::Property;
-use log::{debug, info};
+use log::{debug, error, info};
+use rfitsio::fill_to_2880;
+use std::{thread, time};
 use uuid::Uuid;
 
 pub mod utils {
     use dlopen::raw::Library;
     use lightspeed_astro::props::{Permission, Property};
     use log::{debug, error};
+
+    pub mod capturing {
+        use crate::ccd::AstroDevice;
+        use crate::ccd::ROIFormat;
+        use crate::CcdDevice;
+        use asi_rs::utils;
+        use dlopen::raw::Library;
+        use log::{debug, error, info};
+        use rfitsio::fill_to_2880;
+        use std::sync::{Arc, RwLock};
+        use std::time::Duration;
+        use std::time::SystemTime;
+
+        pub fn expose(
+            camera_index: i32,
+            length: f32,
+            width: i32,
+            height: i32,
+            img_type: i32,
+            device: Arc<RwLock<CcdDevice>>,
+        ) {
+            let lib = match Library::open("libASICamera2.so") {
+		Ok(so) => so,
+		Err(_) => panic!(
+                    "Couldn't find `libASICamera2.so` on the system, please make sure it is installed"
+		),
+            };
+            let start_exposure: extern "C" fn(camera_id: i32) -> i32 =
+                unsafe { lib.symbol("ASIStartExposure") }.unwrap();
+
+            let stop_exposure: extern "C" fn(camera_id: i32) -> i32 =
+                unsafe { lib.symbol("ASIStopExposure") }.unwrap();
+
+            let exposure_status: extern "C" fn(camera_id: i32, p_status: &mut i32) -> i32 =
+                unsafe { lib.symbol("ASIGetExpStatus") }.unwrap();
+
+            let get_data: extern "C" fn(camera_id: i32, &mut [u8], buf_size: i64) -> i32 =
+                unsafe { lib.symbol("ASIGetDataAfterExp") }.unwrap();
+
+            info!("Actual width requested: {}", width);
+            info!("Actual height requested: {}", height);
+
+            // Create the right sized buffer for the image to be stored.
+            // if we shoot at 8 bit it is just width * height
+            let mut buffer_size: i32 = width * height;
+
+            buffer_size = match img_type {
+                1 | 2 => buffer_size * 2,
+                _ => buffer_size,
+            };
+
+            let secs_to_micros = length * num::pow(10i32, 6) as f32;
+            info!("mu secs {}", secs_to_micros);
+            let duration = Duration::from_micros(secs_to_micros as u64);
+            let mut image_buffer = Vec::with_capacity(buffer_size as usize);
+            unsafe {
+                image_buffer.set_len(buffer_size as usize);
+            }
+            let mut status = 5;
+
+            // Swapping exposure related properties AKA prepare props to show
+            // informations about ongoing exposure
+            {
+                let mut d = device.write().unwrap();
+                d.update_internal_property("exposure_status", "EXPOSING");
+            }
+
+            utils::check_error_code(start_exposure(camera_index));
+            let start = SystemTime::now();
+
+            while start.elapsed().unwrap().as_micros() < duration.as_micros() {
+                debug!("Elapsed: {}", start.elapsed().unwrap().as_micros());
+                debug!("Duration: {}", duration.as_micros());
+                utils::check_error_code(exposure_status(camera_index, &mut status));
+                debug!("Status while exposing: {}", status);
+                match status {
+                    1 | 2 => (),
+                    n => error!("An error happened, the exposure status is {}", n),
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            utils::check_error_code(stop_exposure(camera_index));
+            utils::check_error_code(exposure_status(camera_index, &mut status));
+            info!("Status after exposure: {}", status);
+
+            match status {
+                2 => {
+                    {
+                        let mut d = device.write().unwrap();
+                        d.update_internal_property("exposure_status", "SUCCESS");
+                    }
+
+                    utils::check_error_code(get_data(
+                        camera_index,
+                        &mut image_buffer,
+                        buffer_size.into(),
+                    ));
+                }
+                _ => error!("Exposure failed"),
+            }
+
+            let mut final_image: Vec<u8> = Vec::new();
+            for b in
+                b"SIMPLE  =                    T / file conforms to FITS standard                 "
+                    .into_iter()
+            {
+                final_image.push(*b);
+            }
+
+            let bitpix = match img_type {
+		1 | 2 => format!(
+                    "BITPIX  =                   {} / number of bits per data pixel                  ",
+                    "16"
+		),
+		_ => format!(
+                    "BITPIX  =                   {} / number of bits per data pixel                  ",
+                    " 8"
+		),
+            };
+
+            let mut naxis1 = String::new();
+            if width < 1000 {
+                naxis1 = format!(
+                    "NAXIS1  =                 {}{} / length of data axis 1                          ",
+                    " ", width
+		);
+            } else {
+                naxis1 = format!(
+                    "NAXIS1  =                 {} / length of data axis 1                          ",
+                    width
+		);
+            }
+
+            let mut naxis2 = String::new();
+            if height < 1000 {
+                naxis2 = format!(
+                    "NAXIS2  =                 {}{} / length of data axis 2                          ",
+                    " ", height
+		);
+            } else {
+                naxis2 = format!(
+                    "NAXIS2  =                 {} / length of data axis 2                          ",
+                    height
+		);
+            }
+
+            debug!("Len of NAXIS1 {}", naxis1.len());
+            debug!("Len of NAXIS2 {}", naxis2.len());
+
+            for b in bitpix.as_bytes().into_iter() {
+                final_image.push(*b);
+            }
+            for b in
+                b"NAXIS   =                    2 / number of axis                                 "
+                    .into_iter()
+            {
+                final_image.push(*b);
+            }
+            for b in naxis1.as_bytes().into_iter() {
+                final_image.push(*b);
+            }
+            for b in naxis2.as_bytes().into_iter() {
+                final_image.push(*b);
+            }
+
+            for b in b"END".into_iter() {
+                final_image.push(*b);
+            }
+
+            debug!("File len after headers: {}", final_image.len());
+
+            for _ in 0..fill_to_2880(final_image.len() as i32) {
+                final_image.push(32);
+            }
+
+            debug!("File len after filling: {}", final_image.len());
+
+            for b in &image_buffer {
+                final_image.push(*b);
+            }
+
+            debug!("File len after image: {}", final_image.len());
+
+            for _ in 0..fill_to_2880(final_image.len() as i32) {
+                final_image.push(32);
+            }
+
+            debug!("File len after filling image: {}", final_image.len());
+
+            match std::fs::write("zwo001.fits", &final_image) {
+                Ok(_) => debug!("FITS file saved correctly"),
+                Err(e) => error!("FITS file not saved on disk: {}", e),
+            };
+        }
+    }
 
     pub mod structs {
         // The main structure of the ZWO library, this struct is passed to the C function
@@ -55,6 +252,7 @@ pub mod utils {
         }
 
         // struct the will be passed to the C function that stores the actual ROI set.
+        #[derive(Copy, Clone)]
         pub struct ROIFormat {
             pub width: i32,
             pub height: i32,
@@ -143,6 +341,15 @@ pub mod utils {
         }
     }
 
+    pub fn new_read_write_prop(name: &str, value: &str, kind: &str) -> Property {
+        Property {
+            name: name.to_string(),
+            value: value.to_string(),
+            kind: kind.to_string(),
+            permission: Permission::ReadWrite as i32,
+        }
+    }
+
     pub fn check_error_code(code: i32) {
         match code {
             0 => (),                                       //ASI_SUCCESS
@@ -222,7 +429,24 @@ pub mod utils {
         representation
     }
 
-    /// Given an int returns a human readable representation of the image type
+    /// Given an integer returns a human friendly representation of the image_type
+    pub fn int_to_image_type(i: i32) -> String {
+        let s = match i {
+            0 => "RAW8",
+            1 => "RGB24",
+            2 => "RAW16",
+            3 => "Y8",
+            -1 => "END",
+            i => {
+                error!("Image type `{}` not supported", i);
+                "UNKNOWN"
+            }
+        };
+
+        s.to_string()
+    }
+
+    /// Given an array of integers returns a human readable representation of the image type
     pub fn int_to_image_type_array(array: &[i32]) -> String {
         let mut representation = String::new();
 
@@ -285,6 +509,11 @@ pub trait AstroDevice {
     /// does would be to update the property inside `self.properties`.
     fn update_property(&mut self, prop_name: &str, val: &str) -> Result<(), DeviceActions>;
 
+    /// Method used internally by the driver itself to change values for properties that
+    /// be manipulated by the user (like the exposure ones)
+    fn update_internal_property(&mut self, prop_name: &str, val: &str)
+        -> Result<(), DeviceActions>;
+
     /// Use this method to send a command to the device to change the requested property.
     ///
     /// Ideally this method will be a big `match` clause where the matching will execute
@@ -302,9 +531,16 @@ pub trait AsiCcd {
     fn get_control_caps(&mut self);
     fn get_control_value(&self, cap: &AsiProperty) -> i64;
     fn get_num_of_controls(&self) -> i32;
-    fn expose(&self, camera_id: i32, length: f32) -> Vec<u8>;
     fn init_camera_props(&mut self);
     fn asi_caps_to_lightspeed_props(&self) -> Vec<Property>;
+    fn fetch_roi_format(&mut self);
+    fn get_actual_width(&self) -> i32;
+    fn get_actual_height(&self) -> i32;
+    fn get_actual_bin(&self) -> String;
+    fn get_actual_raw_bin(&self) -> i32;
+    fn get_actual_img_type(&self) -> String;
+    fn get_actual_raw_img_type(&self) -> i32;
+    fn get_index(&self) -> i32;
 }
 
 #[derive(Debug, Clone)]
@@ -327,6 +563,7 @@ pub struct CcdDevice {
     index: i32,
     num_of_controls: i32,
     caps: Vec<AsiProperty>,
+    roi: ROIFormat,
 }
 
 impl AstroDevice for CcdDevice {
@@ -345,9 +582,15 @@ impl AstroDevice for CcdDevice {
             name: "".to_string(),
             properties: Vec::new(),
             library: lib,
-            index: index,
+            index,
             num_of_controls: 0,
             caps: Vec::new(),
+            roi: ROIFormat {
+                width: 0,
+                height: 0,
+                bin: 0,
+                img_type: 0,
+            },
         };
         device.init_camera();
         device.init_camera_props();
@@ -379,8 +622,26 @@ impl AstroDevice for CcdDevice {
     /// responsible to trigger the action against the device to update the property
     /// on the device itself, if the action is successful the last thing this method
     /// does would be to update the property inside `self.properties`.
-    fn update_property(&mut self, _prop_name: &str, _val: &str) -> Result<(), DeviceActions> {
-        todo!()
+    fn update_internal_property(
+        &mut self,
+        prop_name: &str,
+        val: &str,
+    ) -> Result<(), DeviceActions> {
+        info!(
+            "driver updating internal property {} with {}",
+            prop_name, val
+        );
+        if let Some(prop_idx) = self.find_property_index(prop_name) {
+            let mut prop = self.properties.get_mut(prop_idx).unwrap();
+            prop.value = val.to_string();
+            Ok(())
+        } else {
+            Err(DeviceActions::UnknownProperty)
+        }
+    }
+
+    fn update_property(&mut self, prop_name: &str, val: &str) -> Result<(), DeviceActions> {
+        todo!();
     }
 
     /// Use this method to send a command to the device to change the requested property.
@@ -397,12 +658,27 @@ impl AstroDevice for CcdDevice {
 
     /// Properties are packed into a vector so to find them we need to
     /// lookup the index, use this method to do so.
-    fn find_property_index(&self, _prop_name: &str) -> Option<usize> {
-        todo!()
+    fn find_property_index(&self, prop_name: &str) -> Option<usize> {
+        let mut index = 256;
+
+        for (idx, prop) in self.properties.iter().enumerate() {
+            if prop.name == prop_name {
+                index = idx;
+                break;
+            }
+        }
+        if index == 256 {
+            None
+        } else {
+            Some(index)
+        }
     }
 }
 
 impl AsiCcd for CcdDevice {
+    fn get_index(&self) -> i32 {
+        self.index
+    }
     fn init_camera(&mut self) {
         let open_camera: extern "C" fn(i32) -> i32 =
             unsafe { self.library.symbol("ASIOpenCamera") }.unwrap();
@@ -420,7 +696,16 @@ impl AsiCcd for CcdDevice {
         // Populate now the caps props as they won't change never during the camera's lifetime
         self.get_control_caps();
 
-        //
+        // Set the ROI
+        self.fetch_roi_format();
+    }
+
+    fn get_actual_raw_bin(&self) -> i32 {
+        self.roi.bin
+    }
+
+    fn get_actual_raw_img_type(&self) -> i32 {
+        self.roi.img_type
     }
 
     fn asi_caps_to_lightspeed_props(&self) -> Vec<Property> {
@@ -518,10 +803,6 @@ impl AsiCcd for CcdDevice {
         num_of_controls
     }
 
-    fn expose(&self, _camera_id: i32, _length: f32) -> Vec<u8> {
-        todo!();
-    }
-
     fn init_camera_props(&mut self) {
         let read_device_properties: extern "C" fn(*mut AsiCameraInfo, i32) -> i32 =
             unsafe { self.library.symbol("ASIGetCameraProperty") }.unwrap();
@@ -597,9 +878,92 @@ impl AsiCcd for CcdDevice {
             "integer",
         ));
 
+        // ROI data: width, height, bin, img type
+        self.properties.push(utils::new_read_write_prop(
+            "width",
+            &self.get_actual_width().to_string(),
+            "integer",
+        ));
+
+        self.properties.push(utils::new_read_write_prop(
+            "width",
+            &self.get_actual_height().to_string(),
+            "integer",
+        ));
+
+        self.properties.push(utils::new_read_write_prop(
+            "bin",
+            &self.get_actual_bin().to_string(),
+            "string",
+        ));
+
+        self.properties.push(utils::new_read_write_prop(
+            "image_type",
+            &self.get_actual_img_type().to_string(),
+            "string",
+        ));
+
+        // Properties to build logic around exposures
+        self.properties
+            .push(utils::new_read_only_prop("exposing", "false", "boolean"));
+
+        self.properties.push(utils::new_read_only_prop(
+            "exposure_status",
+            "IDLE",
+            "string",
+        ));
+
+        self.properties
+            .push(utils::new_read_only_prop("blob", "", "bytes"));
+
         for prop in self.asi_caps_to_lightspeed_props() {
             self.properties.push(prop);
         }
+    }
+
+    fn fetch_roi_format(&mut self) {
+        let _get_roi_format: extern "C" fn(
+            camera_id: i32,
+            width: &mut i32,
+            width: &mut i32,
+            bin: &mut i32,
+            img_type: &mut i32,
+        ) -> i32 = unsafe { self.library.symbol("ASIGetROIFormat") }.unwrap();
+
+        let mut width = 0;
+        let mut height = 0;
+        let mut bin = 0;
+        let mut img_type = 0;
+
+        utils::check_error_code(_get_roi_format(
+            self.index,
+            &mut width,
+            &mut height,
+            &mut bin,
+            &mut img_type,
+        ));
+        info!(
+            "ROI format => width: {} | height: {} | bin: {} | img type: {}",
+            width, height, bin, img_type
+        );
+
+        self.roi.width = width;
+        self.roi.height = height;
+        self.roi.bin = bin;
+        self.roi.img_type = img_type;
+    }
+
+    fn get_actual_width(&self) -> i32 {
+        self.roi.width
+    }
+    fn get_actual_height(&self) -> i32 {
+        self.roi.height
+    }
+    fn get_actual_bin(&self) -> String {
+        utils::int_to_binning_str(&[self.roi.bin])
+    }
+    fn get_actual_img_type(&self) -> String {
+        utils::int_to_image_type(self.roi.img_type)
     }
 }
 
