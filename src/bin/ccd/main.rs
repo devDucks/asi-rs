@@ -13,7 +13,8 @@ use crate::ccd::AstroDevice;
 use ccd::utils;
 use ccd::CcdDevice;
 use env_logger::Env;
-use std::sync::{Arc, Mutex, RwLock};
+use std::net::TcpListener;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::task;
 
@@ -146,6 +147,21 @@ impl AstroService for AsiCcdDriver {
     }
 }
 
+fn port_is_available(host: &str, port: u16) -> bool {
+    match TcpListener::bind((host, port)) {
+        Ok(_) => true,
+        Err(_) => false,
+    }
+}
+fn build_server_address(host: &str) -> std::net::SocketAddr {
+    let port = {
+        (50051..50651)
+            .find(|port| port_is_available(host, *port))
+            .unwrap()
+    };
+    format!("{host}:{port}").parse().unwrap()
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Default to log level INFO if LS_LOG_LEVEL is not set as
@@ -159,7 +175,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .unwrap();
 
-    let addr = "127.0.0.1:50051".parse().unwrap();
+    let host = "127.0.0.1";
+    let addr = build_server_address(host);
     let driver = AsiCcdDriver::new();
 
     let mut devices_for_fetching = Vec::new();
@@ -173,13 +190,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let device = Arc::clone(d);
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
                 device.write().unwrap().fetch_props();
             }
         });
     }
 
     info!("ZWOASIDriver process listening on {}", addr);
+
     Server::builder()
         .add_service(reflection_service)
         .add_service(AstroServiceServer::new(driver))
@@ -196,5 +214,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .await?;
+
     Ok(())
 }
