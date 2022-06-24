@@ -598,7 +598,22 @@ impl AstroDevice for CcdDevice {
     }
 
     fn fetch_props(&mut self) {
+        let now = Instant::now();
         info!("Fetching properties for device {}", self.name);
+        let props = self.asi_caps_to_lightspeed_props();
+
+        for prop in props {
+            if let Some(index) = self.find_property_index(&prop.name) {
+                if prop.value != self.properties[index].value {
+                    info!("Prop {} changed value, updating", prop.name);
+                    let mprop = self.properties.get_mut(index).unwrap();
+                    mprop.value = prop.value;
+                }
+            }
+        }
+
+        let elapsed = now.elapsed();
+        info!("Elapsed: {:.2?}", elapsed);
     }
 
     /// Use this method to return the id of the device as a uuid.
