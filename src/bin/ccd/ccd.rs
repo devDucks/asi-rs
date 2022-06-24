@@ -803,6 +803,22 @@ impl AsiCcd for CcdDevice {
         num_of_controls
     }
 
+    fn fetch_roi_props(&self) -> Vec<Property> {
+        // ROI data: width, height, bin, img type
+        let props = vec![
+            utils::new_read_write_prop("width", &self.get_actual_width().to_string(), "integer"),
+            utils::new_read_write_prop("height", &self.get_actual_height().to_string(), "integer"),
+            utils::new_read_write_prop("bin", &self.get_actual_bin().to_string(), "string"),
+            utils::new_read_write_prop(
+                "image_type",
+                &self.get_actual_img_type().to_string(),
+                "string",
+            ),
+        ];
+
+        props
+    }
+
     fn init_camera_props(&mut self) {
         let read_device_properties: extern "C" fn(*mut AsiCameraInfo, i32) -> i32 =
             unsafe { self.library.symbol("ASIGetCameraProperty") }.unwrap();
@@ -878,30 +894,15 @@ impl AsiCcd for CcdDevice {
             "integer",
         ));
 
-        // ROI data: width, height, bin, img type
-        self.properties.push(utils::new_read_write_prop(
-            "width",
-            &self.get_actual_width().to_string(),
-            "integer",
-        ));
-
-        self.properties.push(utils::new_read_write_prop(
-            "width",
-            &self.get_actual_height().to_string(),
-            "integer",
-        ));
-
         self.properties.push(utils::new_read_write_prop(
             "bin",
             &self.get_actual_bin().to_string(),
             "string",
         ));
 
-        self.properties.push(utils::new_read_write_prop(
-            "image_type",
-            &self.get_actual_img_type().to_string(),
-            "string",
-        ));
+        for prop in self.fetch_roi_props() {
+            self.properties.push(prop);
+        }
 
         // Properties to build logic around exposures
         self.properties
