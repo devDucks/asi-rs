@@ -3,15 +3,90 @@ use convert_case::{Case, Casing};
 use dlopen::raw::Library;
 use lightspeed_astro::devices::actions::DeviceActions;
 use lightspeed_astro::props::Property;
-use log::{debug, error, info};
-use rfitsio::fill_to_2880;
-use std::{thread, time};
+use log::{debug, info};
+use std::time::Instant;
 use uuid::Uuid;
 
 pub mod utils {
     use dlopen::raw::Library;
     use lightspeed_astro::props::{Permission, Property};
-    use log::{debug, error};
+    use log::{error, info, warn};
+
+    pub mod generics {
+        use crate::utils::structs::AsiID;
+        use crate::utils::{asi_id_to_string, check_error_code, new_asi_id};
+        use dlopen::raw::Library;
+        use log::{debug, info};
+        use rand::distributions::Alphanumeric;
+        use rand::{thread_rng, Rng};
+
+        pub fn get_camera_id(camera_index: i32) -> String {
+            let lib = match Library::open("libASICamera2.so") {
+		Ok(so) => so,
+		Err(_) => panic!(
+                    "Couldn't find `libASICamera2.so` on the system, please make sure it is installed"
+		),
+            };
+            let asi_get_id: extern "C" fn(camera_id: i32, asi_id: &mut AsiID) -> i32 =
+                unsafe { lib.symbol("ASIGetID") }.unwrap();
+
+            let mut id: AsiID = new_asi_id();
+            check_error_code(asi_get_id(camera_index, &mut id));
+
+            // if the AsiID is a bunch of 0, we set a random ID and we dump it to the camera flash
+            // memory. If you are wondering why, the reason is the following; one may want to use multiple
+            // cameras even of the same type for taking pics, if both are presented with only the ZWO name
+            // it may be diffcult to manage both if one disconnects and reconnect, or just to pick one
+            // from the UI, setting the ID through ASISetID survives reboot
+            if id.id == [0, 0, 0, 0, 0, 0, 0, 0] {
+                debug!("Setting a random uid");
+                crate::utils::generics::set_camera_id(camera_index, None);
+            }
+            let id_str = asi_id_to_string(&id.id);
+            debug!(
+                "GET ASI ID for camera with index {}: {:?}",
+                camera_index, &id
+            );
+            id_str
+        }
+
+        pub fn set_camera_id(camera_index: i32, cam_id: Option<[u8; 8]>) {
+            let lib = match Library::open("libASICamera2.so") {
+		Ok(so) => so,
+		Err(_) => panic!(
+                    "Couldn't find `libASICamera2.so` on the system, please make sure it is installed"
+		),
+            };
+            let asi_set_id: extern "C" fn(camera_id: i32, asi_id: AsiID) -> i32 =
+                unsafe { lib.symbol("ASISetID") }.unwrap();
+
+            // int pointer that will be passed to the C function to be filled
+            let mut id: AsiID = new_asi_id();
+
+            match cam_id {
+                Some(i) => id.id = i,
+                None => {
+                    let rand_string: String = thread_rng()
+                        .sample_iter(&Alphanumeric)
+                        .take(8)
+                        .map(char::from)
+                        .collect();
+                    let r = rand_string.as_bytes();
+
+                    for (i, byte) in r.iter().enumerate() {
+                        id.id[i] = *byte;
+                    }
+                }
+            }
+
+            info!(
+                "SET ASI ID for camera with index {}: {:?}",
+                camera_index,
+                asi_id_to_string(&id.id)
+            );
+            crate::utils::check_error_code(asi_set_id(camera_index, id));
+        }
+    }
 
     pub mod capturing {
         use crate::ccd::AstroDevice;
@@ -210,8 +285,16 @@ pub mod utils {
     }
 
     pub mod structs {
+        // Struct to manipulate the ASI ID
+        #[derive(Debug)]
+        #[repr(C)]
+        pub struct AsiID {
+            pub id: [u8; 8],
+        }
+
         // The main structure of the ZWO library, this struct is passed to the C function
         // and will contain READ-ONLY phisycal properties of the camera.
+        #[derive(Debug)]
         #[repr(C)]
         pub struct AsiCameraInfo {
             // The name of the camera, you can display this to the UI
@@ -317,6 +400,10 @@ pub mod utils {
         }
     }
 
+    pub fn new_asi_id() -> crate::ccd::utils::structs::AsiID {
+        crate::ccd::utils::structs::AsiID { id: [0; 8] }
+    }
+
     pub fn asi_name_to_string(name_array: &[u8]) -> String {
         let mut index: usize = 0;
 
@@ -327,9 +414,28 @@ pub mod utils {
             }
             index += 1
         }
-        std::str::from_utf8(&name_array[0..index])
-            .unwrap()
-            .to_string()
+        if let Ok(id) = std::str::from_utf8(&name_array[0..index]) {
+            id.to_string()
+        } else {
+            String::from("UNKNOWN")
+        }
+    }
+
+    pub fn asi_id_to_string(id_array: &[u8]) -> String {
+        let mut index: usize = 0;
+
+        // format the name dropping 0 from the name array
+        for (_, el) in id_array.into_iter().enumerate() {
+            if *el == 0 {
+                break;
+            }
+            index += 1
+        }
+        if let Ok(id) = std::str::from_utf8(&id_array[0..index]) {
+            id.to_string()
+        } else {
+            String::from("UNKNOWN")
+        }
     }
 
     pub fn new_read_only_prop(name: &str, value: &str, kind: &str) -> Property {
@@ -398,7 +504,11 @@ pub mod utils {
         let look_for_devices: extern "C" fn() -> i32 =
             unsafe { lib.symbol("ASIGetNumOfConnectedCameras") }.unwrap();
         let num_of_devs = look_for_devices();
-        debug!("Found {} ZWO Cameras", num_of_devs);
+
+        match num_of_devs {
+            0 => warn!("No ZWO cameras found"),
+            _ => info!("Found {} ZWO Cameras", num_of_devs),
+        }
         num_of_devs
     }
 
@@ -541,6 +651,7 @@ pub trait AsiCcd {
     fn get_actual_img_type(&self) -> String;
     fn get_actual_raw_img_type(&self) -> i32;
     fn get_index(&self) -> i32;
+    fn fetch_roi_props(&self) -> Vec<Property>;
 }
 
 #[derive(Debug, Clone)]
@@ -564,6 +675,7 @@ pub struct CcdDevice {
     num_of_controls: i32,
     caps: Vec<AsiProperty>,
     roi: ROIFormat,
+    ls_rand_id: [u8; 8],
 }
 
 impl AstroDevice for CcdDevice {
@@ -591,6 +703,7 @@ impl AstroDevice for CcdDevice {
                 bin: 0,
                 img_type: 0,
             },
+            ls_rand_id: [0; 8],
         };
         device.init_camera();
         device.init_camera_props();
@@ -683,9 +796,9 @@ impl AstroDevice for CcdDevice {
             }
         }
         if index == 256 {
-            None
+            return None;
         } else {
-            Some(index)
+            return Some(index);
         }
     }
 }
@@ -702,6 +815,14 @@ impl AsiCcd for CcdDevice {
         debug!("Saying welcome to camera `{}`", self.name);
         utils::check_error_code(open_camera(self.index));
         utils::check_error_code(init_camera(self.index));
+
+        // Check if we have a random generated id for the camera, if not generate one,
+        // store it on the camera itself and assign it to self.ls_rand_id
+        let ls_rand_id = utils::generics::get_camera_id(self.index);
+
+        for (i, byte) in ls_rand_id.as_bytes().iter().enumerate() {
+            self.ls_rand_id[i] = *byte;
+        }
 
         // Check how many capabilities this camera has, reallocate the vector
         // after the number is known
@@ -727,7 +848,7 @@ impl AsiCcd for CcdDevice {
         let mut props: Vec<Property> = Vec::new();
 
         for cap in &self.caps {
-            info!("CAP name: {}", &cap.name);
+            debug!("CAP name: {}", &cap.name);
             let mut cap_value = self.get_control_value(cap).to_string();
             let mut kind_value = String::from("integer");
 
@@ -910,8 +1031,8 @@ impl AsiCcd for CcdDevice {
         ));
 
         self.properties.push(utils::new_read_write_prop(
-            "bin",
-            &self.get_actual_bin().to_string(),
+            "ls_rand_id",
+            &utils::asi_id_to_string(&self.ls_rand_id),
             "string",
         ));
 
