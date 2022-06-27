@@ -1,3 +1,4 @@
+use asi_rs::asilib;
 use asi_rs::asilib::structs::{AsiCameraInfo, AsiControlCaps, ROIFormat};
 use convert_case::{Case, Casing};
 use dlopen::raw::Library;
@@ -692,13 +693,9 @@ impl AsiCcd for CcdDevice {
         self.index
     }
     fn init_camera(&mut self) {
-        let open_camera: extern "C" fn(i32) -> i32 =
-            unsafe { self.library.symbol("ASIOpenCamera") }.unwrap();
-        let init_camera: extern "C" fn(i32) -> i32 =
-            unsafe { self.library.symbol("ASIInitCamera") }.unwrap();
         debug!("Saying welcome to camera `{}`", self.name);
-        utils::check_error_code(open_camera(self.index));
-        utils::check_error_code(init_camera(self.index));
+        asilib::open_camera(self.index);
+        asilib::init_camera(self.index);
 
         // Check if we have a random generated id for the camera, if not generate one,
         // store it on the camera itself and assign it to self.ls_rand_id

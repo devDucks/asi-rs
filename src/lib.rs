@@ -73,6 +73,16 @@ pub mod asilib {
         fn ASIGetDataAfterExp(camera_id: i32, buffer: *mut libc::c_uchar, buf_size: i64) -> i32;
     }
 
+    #[link(name = "ASICamera2")]
+    extern "C" {
+        fn ASIOpenCamera(camera_index: i32) -> i32;
+    }
+
+    #[link(name = "ASICamera2")]
+    extern "C" {
+        fn ASIInitCamera(camera_index: i32) -> i32;
+    }
+
     pub fn start_exposure(camera_id: i32) {
         utils::check_error_code(unsafe { ASIStartExposure(camera_id) });
     }
@@ -99,6 +109,14 @@ pub mod asilib {
 
     pub fn set_cam_id(camera_id: i32, asi_id: AsiID) {
         utils::check_error_code(unsafe { ASISetID(camera_id, asi_id) });
+    }
+
+    pub fn open_camera(camera_index: i32) {
+        utils::check_error_code(unsafe { ASIOpenCamera(camera_index) });
+    }
+
+    pub fn init_camera(camera_index: i32) {
+        utils::check_error_code(unsafe { ASIInitCamera(camera_index) });
     }
 
     pub mod structs {
