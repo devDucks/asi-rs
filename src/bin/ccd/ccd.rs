@@ -8,7 +8,7 @@ use std::time::Instant;
 use uuid::Uuid;
 
 pub mod utils {
-    use dlopen::raw::Library;
+    use asi_rs::asilib;
     use lightspeed_astro::props::{Permission, Property};
     use log::{error, info, warn};
 
@@ -92,6 +92,7 @@ pub mod utils {
         use crate::ccd::AstroDevice;
         use crate::utils;
         use crate::CcdDevice;
+        use asi_rs::asilib;
         use dlopen::raw::Library;
         use log::{debug, error, info};
         use rfitsio::fill_to_2880;
@@ -113,8 +114,6 @@ pub mod utils {
                     "Couldn't find `libASICamera2.so` on the system, please make sure it is installed"
 		),
             };
-            let start_exposure: extern "C" fn(camera_id: i32) -> i32 =
-                unsafe { lib.symbol("ASIStartExposure") }.unwrap();
 
             let stop_exposure: extern "C" fn(camera_id: i32) -> i32 =
                 unsafe { lib.symbol("ASIStopExposure") }.unwrap();
@@ -153,7 +152,8 @@ pub mod utils {
                 d.update_internal_property("exposure_status", "EXPOSING");
             }
 
-            utils::check_error_code(start_exposure(camera_index));
+            asilib::start_exposure(camera_index);
+
             let start = SystemTime::now();
 
             while start.elapsed().unwrap().as_micros() < duration.as_micros() {
@@ -494,15 +494,7 @@ pub mod utils {
     }
 
     pub fn look_for_devices() -> i32 {
-        let lib = match Library::open("libASICamera2.so") {
-            Ok(so) => so,
-            Err(_) => panic!(
-                "Couldn't find `libASICamera2.so` on the system, please make sure it is installed"
-            ),
-        };
-        let look_for_devices: extern "C" fn() -> i32 =
-            unsafe { lib.symbol("ASIGetNumOfConnectedCameras") }.unwrap();
-        let num_of_devs = look_for_devices();
+        let num_of_devs = asilib::get_num_of_connected_cameras();
 
         match num_of_devs {
             0 => warn!("No ZWO cameras found"),
