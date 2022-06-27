@@ -775,23 +775,17 @@ impl AsiCcd for CcdDevice {
     }
 
     fn close(&self) {
-        let close_camera: extern "C" fn(i32) -> i32 =
-            unsafe { self.library.symbol("ASICloseCamera") }.unwrap();
         debug!("Closing camera {}", self.name);
-        close_camera(self.index);
+        asilib::close_camera(self.index);
         drop(&self.library);
     }
 
     fn get_control_caps(&mut self) {
-        let get_contr_caps: extern "C" fn(
-            camera_id: i32,
-            index: i32,
-            noc: *mut AsiControlCaps,
-        ) -> i32 = unsafe { self.library.symbol("ASIGetControlCaps") }.unwrap();
-
         for i in 0..self.num_of_controls {
-            let mut control_caps = utils::new_asi_controls_caps();
-            utils::check_error_code(get_contr_caps(self.index, i, &mut control_caps));
+            let mut control_caps = AsiControlCaps::new();
+
+            asilib::get_control_caps(self.index, i, &mut control_caps);
+
             let cap = AsiProperty {
                 name: utils::asi_name_to_string(&control_caps.name).to_case(Case::Snake),
                 _description: utils::asi_name_to_string(&control_caps.description),
@@ -808,11 +802,8 @@ impl AsiCcd for CcdDevice {
     }
 
     fn get_num_of_controls(&self) -> i32 {
-        let get_num_of_controls: extern "C" fn(camera_id: i32, noc: *mut i32) -> i32 =
-            unsafe { self.library.symbol("ASIGetNumOfControls") }.unwrap();
         let mut num_of_controls = 0;
-        let result = get_num_of_controls(self.index, &mut num_of_controls);
-        utils::check_error_code(result);
+        asilib::get_num_of_controls(self.index, &mut num_of_controls);
         info!(
             "Found: {} controls for camera {}",
             num_of_controls, self.name

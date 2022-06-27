@@ -35,7 +35,7 @@ pub mod utils {
 }
 
 pub mod asilib {
-    use crate::asilib::structs::AsiID;
+    use crate::asilib::structs::{AsiControlCaps, AsiID};
     use crate::utils;
 
     #[link(name = "ASICamera2")]
@@ -83,6 +83,21 @@ pub mod asilib {
         fn ASIInitCamera(camera_index: i32) -> i32;
     }
 
+    #[link(name = "ASICamera2")]
+    extern "C" {
+        fn ASIGetControlCaps(camera_id: i32, index: i32, noc: *mut AsiControlCaps) -> i32;
+    }
+
+    #[link(name = "ASICamera2")]
+    extern "C" {
+        fn ASICloseCamera(camera_index: i32) -> i32;
+    }
+
+    #[link(name = "ASICamera2")]
+    extern "C" {
+        fn ASIGetNumOfControls(camera_id: i32, noc: *mut i32) -> i32;
+    }
+
     pub fn start_exposure(camera_id: i32) {
         utils::check_error_code(unsafe { ASIStartExposure(camera_id) });
     }
@@ -117,6 +132,18 @@ pub mod asilib {
 
     pub fn init_camera(camera_index: i32) {
         utils::check_error_code(unsafe { ASIInitCamera(camera_index) });
+    }
+
+    pub fn close_camera(camera_index: i32) {
+        utils::check_error_code(unsafe { ASICloseCamera(camera_index) });
+    }
+
+    pub fn get_control_caps(camera_id: i32, index: i32, noc: *mut AsiControlCaps) {
+        utils::check_error_code(unsafe { ASIGetControlCaps(camera_id, index, noc) });
+    }
+
+    pub fn get_num_of_controls(camera_index: i32, noc: *mut i32) {
+        utils::check_error_code(unsafe { ASIGetNumOfControls(camera_index, noc) });
     }
 
     pub mod structs {
@@ -201,6 +228,22 @@ pub mod asilib {
             // This is used to get value and set value of the control
             pub control_type: i32,
             pub unused: [u8; 32],
+        }
+
+        impl AsiControlCaps {
+            pub fn new() -> Self {
+                Self {
+                    name: [0; 64],
+                    description: [0; 128],
+                    max_value: 0,
+                    min_value: 0,
+                    default_value: 0,
+                    is_auto_supported: 0,
+                    is_writable: 0,
+                    control_type: 0,
+                    unused: [0; 32],
+                }
+            }
         }
     }
 }
