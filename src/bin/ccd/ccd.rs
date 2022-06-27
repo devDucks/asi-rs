@@ -90,9 +90,8 @@ pub mod utils {
 
     pub mod capturing {
         use crate::ccd::AstroDevice;
-        use crate::ccd::ROIFormat;
+        use crate::utils;
         use crate::CcdDevice;
-        use asi_rs::utils;
         use dlopen::raw::Library;
         use log::{debug, error, info};
         use rfitsio::fill_to_2880;
@@ -768,7 +767,7 @@ impl AstroDevice for CcdDevice {
         }
     }
 
-    fn update_property(&mut self, prop_name: &str, val: &str) -> Result<(), DeviceActions> {
+    fn update_property(&mut self, _prop_name: &str, _val: &str) -> Result<(), DeviceActions> {
         todo!();
     }
 

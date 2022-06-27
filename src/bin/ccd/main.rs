@@ -77,8 +77,6 @@ impl AstroService for AsiCcdDriver {
         let devices = self.devices.clone();
 
         for d in devices.iter() {
-            let device = Arc::clone(d);
-
             {
                 let device = d.read().unwrap();
                 let index = device.get_index().clone();
