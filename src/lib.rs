@@ -35,8 +35,8 @@ pub mod utils {
 }
 
 pub mod asilib {
-    use crate::utils;
     use crate::asilib::structs::AsiID;
+    use crate::utils;
 
     #[link(name = "ASICamera2")]
     extern "C" {
@@ -50,42 +50,55 @@ pub mod asilib {
 
     #[link(name = "ASICamera2")]
     extern "C" {
-	fn ASIGetID(camera_id: i32, asi_id: &mut AsiID) -> i32;
+        fn ASIGetID(camera_id: i32, asi_id: &mut AsiID) -> i32;
     }
 
     #[link(name = "ASICamera2")]
     extern "C" {
-	fn ASISetID(camera_id: i32, asi_id: AsiID) -> i32;
+        fn ASISetID(camera_id: i32, asi_id: AsiID) -> i32;
+    }
+
+    #[link(name = "ASICamera2")]
+    extern "C" {
+        fn ASIStopExposure(camera_id: i32) -> i32;
+    }
+
+    #[link(name = "ASICamera2")]
+    extern "C" {
+        fn ASIGetExpStatus(camera_id: i32, p_status: &mut i32) -> i32;
+    }
+
+    #[link(name = "ASICamera2")]
+    extern "C" {
+        fn ASIGetDataAfterExp(camera_id: i32, buffer: *mut libc::c_uchar, buf_size: i64) -> i32;
     }
 
     pub fn start_exposure(camera_id: i32) {
-        utils::check_error_code(
-	    unsafe {
-		ASIStartExposure(camera_id)
-	    }
-	);
+        utils::check_error_code(unsafe { ASIStartExposure(camera_id) });
+    }
+
+    pub fn stop_exposure(camera_id: i32) {
+        utils::check_error_code(unsafe { ASIStopExposure(camera_id) });
+    }
+
+    pub fn exposure_status(camera_id: i32, status: &mut i32) {
+        utils::check_error_code(unsafe { ASIGetExpStatus(camera_id, status) });
+    }
+
+    pub fn download_exposure(camera_id: i32, buffer: *mut u8, buf_size: i64) {
+        utils::check_error_code(unsafe { ASIGetDataAfterExp(camera_id, buffer, buf_size) });
     }
 
     pub fn get_num_of_connected_cameras() -> i32 {
-        unsafe {
-	    ASIGetNumOfConnectedCameras()
-	}
+        unsafe { ASIGetNumOfConnectedCameras() }
     }
 
     pub fn get_cam_id(camera_id: i32, asi_id: &mut AsiID) {
-	utils::check_error_code(
-            unsafe {
-		ASIGetID(camera_id, asi_id)
-	    }
-	);
+        utils::check_error_code(unsafe { ASIGetID(camera_id, asi_id) });
     }
 
     pub fn set_cam_id(camera_id: i32, asi_id: AsiID) {
-	utils::check_error_code(
-            unsafe {
-		ASISetID(camera_id, asi_id)
-	    }
-	);
+        utils::check_error_code(unsafe { ASISetID(camera_id, asi_id) });
     }
 
     pub mod structs {
@@ -96,13 +109,11 @@ pub mod asilib {
             pub id: [u8; 8],
         }
 
-	impl AsiID {
-	    pub fn new() -> Self {
-		Self {
-		    id: [0; 8],
-		}
-	    }
-	}
+        impl AsiID {
+            pub fn new() -> Self {
+                Self { id: [0; 8] }
+            }
+        }
 
         // The main structure of the ZWO library, this struct is passed to the C function
         // and will contain READ-ONLY phisycal properties of the camera.

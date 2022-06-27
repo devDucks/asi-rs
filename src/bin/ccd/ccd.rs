@@ -9,14 +9,14 @@ use uuid::Uuid;
 
 pub mod utils {
     use asi_rs::asilib;
+    use asi_rs::asilib::structs::{AsiCameraInfo, AsiControlCaps, AsiID};
     use lightspeed_astro::props::{Permission, Property};
     use log::{error, info, warn};
-    use asi_rs::asilib::structs::{AsiCameraInfo, AsiControlCaps, AsiID};
 
     pub mod generics {
-	use asi_rs::asilib;
+        use crate::utils::asi_id_to_string;
+        use asi_rs::asilib;
         use asi_rs::asilib::structs::AsiID;
-        use crate::utils::{asi_id_to_string, check_error_code, new_asi_id};
         use log::{debug, info};
         use rand::distributions::Alphanumeric;
         use rand::{thread_rng, Rng};
@@ -35,10 +35,7 @@ pub mod utils {
                 crate::utils::generics::set_camera_id(camera_index, None);
             }
             let id_str = asi_id_to_string(&id.id);
-            info!(
-                "ASI ID for camera with index {}: {:?}",
-                camera_index, &id
-            );
+            info!("ASI ID for camera with index {}: {:?}", camera_index, &id);
             id_str
         }
 
@@ -73,7 +70,6 @@ pub mod utils {
 
     pub mod capturing {
         use crate::ccd::AstroDevice;
-        use crate::utils;
         use crate::CcdDevice;
         use asi_rs::asilib;
         use dlopen::raw::Library;
@@ -98,13 +94,7 @@ pub mod utils {
 		),
             };
 
-            let stop_exposure: extern "C" fn(camera_id: i32) -> i32 =
-                unsafe { lib.symbol("ASIStopExposure") }.unwrap();
-
-            let exposure_status: extern "C" fn(camera_id: i32, p_status: &mut i32) -> i32 =
-                unsafe { lib.symbol("ASIGetExpStatus") }.unwrap();
-
-            let get_data: extern "C" fn(camera_id: i32, &mut [u8], buf_size: i64) -> i32 =
+            let get_data: extern "C" fn(camera_id: i32, buffer: &mut [u8], buf_size: i64) -> i32 =
                 unsafe { lib.symbol("ASIGetDataAfterExp") }.unwrap();
 
             info!("Actual width requested: {}", width);
@@ -142,8 +132,8 @@ pub mod utils {
             while start.elapsed().unwrap().as_micros() < duration.as_micros() {
                 debug!("Elapsed: {}", start.elapsed().unwrap().as_micros());
                 debug!("Duration: {}", duration.as_micros());
-                utils::check_error_code(exposure_status(camera_index, &mut status));
-                debug!("Status while exposing: {}", status);
+                asilib::exposure_status(camera_index, &mut status);
+                info!("Status while exposing: {}", status);
                 match status {
                     1 | 2 => (),
                     n => error!("An error happened, the exposure status is {}", n),
@@ -151,8 +141,8 @@ pub mod utils {
 
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
-            utils::check_error_code(stop_exposure(camera_index));
-            utils::check_error_code(exposure_status(camera_index, &mut status));
+            asilib::stop_exposure(camera_index);
+            asilib::exposure_status(camera_index, &mut status);
             info!("Status after exposure: {}", status);
 
             match status {
@@ -162,11 +152,11 @@ pub mod utils {
                         d.update_internal_property("exposure_status", "SUCCESS");
                     }
 
-                    utils::check_error_code(get_data(
+                    asilib::download_exposure(
                         camera_index,
-                        &mut image_buffer,
+                        image_buffer.as_mut_ptr(),
                         buffer_size.into(),
-                    ));
+                    );
                 }
                 _ => error!("Exposure failed"),
             }
