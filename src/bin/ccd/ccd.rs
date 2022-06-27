@@ -1,4 +1,4 @@
-use crate::ccd::utils::structs::{AsiCameraInfo, AsiControlCaps, ROIFormat};
+use asi_rs::asilib::structs::{AsiCameraInfo, AsiControlCaps, ROIFormat};
 use convert_case::{Case, Casing};
 use dlopen::raw::Library;
 use lightspeed_astro::devices::actions::DeviceActions;
@@ -11,27 +11,19 @@ pub mod utils {
     use asi_rs::asilib;
     use lightspeed_astro::props::{Permission, Property};
     use log::{error, info, warn};
+    use asi_rs::asilib::structs::{AsiCameraInfo, AsiControlCaps, AsiID};
 
     pub mod generics {
-        use crate::utils::structs::AsiID;
+	use asi_rs::asilib;
+        use asi_rs::asilib::structs::AsiID;
         use crate::utils::{asi_id_to_string, check_error_code, new_asi_id};
-        use dlopen::raw::Library;
         use log::{debug, info};
         use rand::distributions::Alphanumeric;
         use rand::{thread_rng, Rng};
 
         pub fn get_camera_id(camera_index: i32) -> String {
-            let lib = match Library::open("libASICamera2.so") {
-		Ok(so) => so,
-		Err(_) => panic!(
-                    "Couldn't find `libASICamera2.so` on the system, please make sure it is installed"
-		),
-            };
-            let asi_get_id: extern "C" fn(camera_id: i32, asi_id: &mut AsiID) -> i32 =
-                unsafe { lib.symbol("ASIGetID") }.unwrap();
-
-            let mut id: AsiID = new_asi_id();
-            check_error_code(asi_get_id(camera_index, &mut id));
+            let mut id: AsiID = AsiID::new();
+            asilib::get_cam_id(camera_index, &mut id);
 
             // if the AsiID is a bunch of 0, we set a random ID and we dump it to the camera flash
             // memory. If you are wondering why, the reason is the following; one may want to use multiple
@@ -43,25 +35,16 @@ pub mod utils {
                 crate::utils::generics::set_camera_id(camera_index, None);
             }
             let id_str = asi_id_to_string(&id.id);
-            debug!(
-                "GET ASI ID for camera with index {}: {:?}",
+            info!(
+                "ASI ID for camera with index {}: {:?}",
                 camera_index, &id
             );
             id_str
         }
 
         pub fn set_camera_id(camera_index: i32, cam_id: Option<[u8; 8]>) {
-            let lib = match Library::open("libASICamera2.so") {
-		Ok(so) => so,
-		Err(_) => panic!(
-                    "Couldn't find `libASICamera2.so` on the system, please make sure it is installed"
-		),
-            };
-            let asi_set_id: extern "C" fn(camera_id: i32, asi_id: AsiID) -> i32 =
-                unsafe { lib.symbol("ASISetID") }.unwrap();
-
             // int pointer that will be passed to the C function to be filled
-            let mut id: AsiID = new_asi_id();
+            let mut id: AsiID = AsiID::new();
 
             match cam_id {
                 Some(i) => id.id = i,
@@ -84,7 +67,7 @@ pub mod utils {
                 camera_index,
                 asi_id_to_string(&id.id)
             );
-            crate::utils::check_error_code(asi_set_id(camera_index, id));
+            asilib::set_cam_id(camera_index, id);
         }
     }
 
@@ -283,87 +266,8 @@ pub mod utils {
         }
     }
 
-    pub mod structs {
-        // Struct to manipulate the ASI ID
-        #[derive(Debug)]
-        #[repr(C)]
-        pub struct AsiID {
-            pub id: [u8; 8],
-        }
-
-        // The main structure of the ZWO library, this struct is passed to the C function
-        // and will contain READ-ONLY phisycal properties of the camera.
-        #[derive(Debug)]
-        #[repr(C)]
-        pub struct AsiCameraInfo {
-            // The name of the camera, you can display this to the UI
-            pub name: [u8; 64],
-            // This is used to control everything of the camera in other functions.Start from 0.
-            pub camera_id: i32,
-            // The max height of the camera
-            pub max_height: i64,
-            // The max width of the camera
-            pub max_width: i64,
-            // Is this a color camera?
-            pub is_color_cam: i32,
-            // The bayer pattern of the sensor
-            pub bayer_pattern: i32,
-            // Which types of binnings are supported, 1 means bin1 which is supported by every camera, 2 means bin 2 etc.. 0 is the end of supported binning method
-            pub supported_bins: [i32; 16],
-            // This array will content with the support output format type.IMG_END is the end of supported video format
-            pub supported_video_format: [i32; 8],
-            // The pixel size, be aware that is only one dimension, the pitch would be pixel_size * pixel_size
-            pub pixel_size: f64,
-            // Is there a mechanical shutter?
-            pub mechanical_shutter: i32,
-            // Is there any ST4 port on the camera?
-            pub st4_port: i32,
-            // Is there a cooling system?
-            pub is_cooler_cam: i32,
-            // Can this camera be used as USB3 hub?
-            pub is_usb3_host: i32,
-            // Does this camera support USB3?
-            pub is_usb3_camera: i32,
-            // Number of e-/ADU
-            pub elec_per_adu: f32,
-            // The bit depth of the sensor (Usually 12, 14 or 16)
-            pub bit_depth: i32,
-            pub is_trigger_cam: i32,
-            // ZWO reserved
-            pub unused: [u8; 16],
-        }
-
-        // struct the will be passed to the C function that stores the actual ROI set.
-        #[derive(Copy, Clone)]
-        pub struct ROIFormat {
-            pub width: i32,
-            pub height: i32,
-            pub bin: i32,
-            pub img_type: i32,
-        }
-
-        #[repr(C)]
-        #[derive(Debug)]
-        pub struct AsiControlCaps {
-            // The name of the Control like Exposure, Gain etc..
-            pub name: [u8; 64],
-            // Description of this control
-            pub description: [u8; 128],
-            pub max_value: i64,
-            pub min_value: i64,
-            pub default_value: i64,
-            // Support auto set 1, don't support 0
-            pub is_auto_supported: i32,
-            // Some control like temperature can only be read by some cameras
-            pub is_writable: i32,
-            // This is used to get value and set value of the control
-            pub control_type: i32,
-            pub unused: [u8; 32],
-        }
-    }
-
-    pub fn new_asi_info() -> crate::ccd::utils::structs::AsiCameraInfo {
-        crate::ccd::utils::structs::AsiCameraInfo {
+    pub fn new_asi_info() -> AsiCameraInfo {
+        AsiCameraInfo {
             name: [0; 64],
             camera_id: 9,
             max_height: 0,
@@ -385,8 +289,8 @@ pub mod utils {
         }
     }
 
-    pub fn new_asi_controls_caps() -> crate::ccd::utils::structs::AsiControlCaps {
-        crate::ccd::utils::structs::AsiControlCaps {
+    pub fn new_asi_controls_caps() -> AsiControlCaps {
+        AsiControlCaps {
             name: [0; 64],
             description: [0; 128],
             max_value: 0,
@@ -399,8 +303,8 @@ pub mod utils {
         }
     }
 
-    pub fn new_asi_id() -> crate::ccd::utils::structs::AsiID {
-        crate::ccd::utils::structs::AsiID { id: [0; 8] }
+    pub fn new_asi_id() -> AsiID {
+        AsiID { id: [0; 8] }
     }
 
     pub fn asi_name_to_string(name_array: &[u8]) -> String {
@@ -645,14 +549,13 @@ pub trait AsiCcd {
     fn fetch_roi_props(&self) -> Vec<Property>;
 }
 
-#[derive(Debug, Clone)]
 pub struct AsiProperty {
     name: String,
-    description: String,
-    max_value: i64,
-    min_value: i64,
-    default_value: i64,
-    is_auto_supported: bool,
+    _description: String,
+    _max_value: i64,
+    _min_value: i64,
+    _default_value: i64,
+    _is_auto_supported: bool,
     is_writable: bool,
     control_type: i32,
 }
@@ -904,11 +807,11 @@ impl AsiCcd for CcdDevice {
             utils::check_error_code(get_contr_caps(self.index, i, &mut control_caps));
             let cap = AsiProperty {
                 name: utils::asi_name_to_string(&control_caps.name).to_case(Case::Snake),
-                description: utils::asi_name_to_string(&control_caps.description),
-                max_value: control_caps.max_value,
-                min_value: control_caps.min_value,
-                default_value: control_caps.default_value,
-                is_auto_supported: control_caps.is_auto_supported != 0,
+                _description: utils::asi_name_to_string(&control_caps.description),
+                _max_value: control_caps.max_value,
+                _min_value: control_caps.min_value,
+                _default_value: control_caps.default_value,
+                _is_auto_supported: control_caps.is_auto_supported != 0,
                 is_writable: control_caps.is_writable != 0,
                 control_type: control_caps.control_type,
             };
