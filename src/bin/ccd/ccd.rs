@@ -752,21 +752,10 @@ impl AsiCcd for CcdDevice {
     }
 
     fn get_control_value(&self, cap: &AsiProperty) -> i64 {
-        let get_ctrl_val: extern "C" fn(
-            camera_id: i32,
-            control_type: i32,
-            value: &mut i64,
-            is_auto_set: &mut i32,
-        ) -> i32 = unsafe { self.library.symbol("ASIGetControlValue") }.unwrap();
         debug!("Getting value for prop {}", cap.name);
         let mut is_auto_set = 0;
         let mut val: i64 = 0;
-        utils::check_error_code(get_ctrl_val(
-            self.index,
-            cap.control_type,
-            &mut val,
-            &mut is_auto_set,
-        ));
+        asilib::get_control_value(self.index, cap.control_type, &mut val, &mut is_auto_set);
         debug!(
             "Value for {} is {} - Auto adjusted? {}",
             cap.name, val, cap.is_writable
@@ -828,11 +817,8 @@ impl AsiCcd for CcdDevice {
     }
 
     fn init_camera_props(&mut self) {
-        let read_device_properties: extern "C" fn(*mut AsiCameraInfo, i32) -> i32 =
-            unsafe { self.library.symbol("ASIGetCameraProperty") }.unwrap();
-
-        let mut info = utils::new_asi_info();
-        utils::check_error_code(read_device_properties(&mut info, self.index));
+        let mut info = AsiCameraInfo::new();
+        asilib::get_camera_info(&mut info, self.index);
 
         // Name the device now
         self.name = utils::asi_name_to_string(&info.name);
@@ -931,26 +917,12 @@ impl AsiCcd for CcdDevice {
     }
 
     fn fetch_roi_format(&mut self) {
-        let _get_roi_format: extern "C" fn(
-            camera_id: i32,
-            width: &mut i32,
-            width: &mut i32,
-            bin: &mut i32,
-            img_type: &mut i32,
-        ) -> i32 = unsafe { self.library.symbol("ASIGetROIFormat") }.unwrap();
-
         let mut width = 0;
         let mut height = 0;
         let mut bin = 0;
         let mut img_type = 0;
 
-        utils::check_error_code(_get_roi_format(
-            self.index,
-            &mut width,
-            &mut height,
-            &mut bin,
-            &mut img_type,
-        ));
+        asilib::get_roi_format(self.index, &mut width, &mut height, &mut bin, &mut img_type);
         info!(
             "ROI format => width: {} | height: {} | bin: {} | img type: {}",
             width, height, bin, img_type

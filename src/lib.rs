@@ -35,7 +35,7 @@ pub mod utils {
 }
 
 pub mod asilib {
-    use crate::asilib::structs::{AsiControlCaps, AsiID};
+    use crate::asilib::structs::{AsiCameraInfo, AsiControlCaps, AsiID};
     use crate::utils;
 
     #[link(name = "ASICamera2")]
@@ -98,6 +98,32 @@ pub mod asilib {
         fn ASIGetNumOfControls(camera_id: i32, noc: *mut i32) -> i32;
     }
 
+    #[link(name = "ASICamera2")]
+    extern "C" {
+        fn ASIGetCameraProperty(asi_info: &mut AsiCameraInfo, camera_index: i32) -> i32;
+    }
+
+    #[link(name = "ASICamera2")]
+    extern "C" {
+        fn ASIGetROIFormat(
+            camera_id: i32,
+            width: &mut i32,
+            height: &mut i32,
+            bin: &mut i32,
+            img_type: &mut i32,
+        ) -> i32;
+    }
+
+    #[link(name = "ASICamera2")]
+    extern "C" {
+        fn ASIGetControlValue(
+            camera_id: i32,
+            control_type: i32,
+            value: &mut i64,
+            is_auto_set: &mut i32,
+        ) -> i32;
+    }
+
     pub fn start_exposure(camera_id: i32) {
         utils::check_error_code(unsafe { ASIStartExposure(camera_id) });
     }
@@ -144,6 +170,33 @@ pub mod asilib {
 
     pub fn get_num_of_controls(camera_index: i32, noc: *mut i32) {
         utils::check_error_code(unsafe { ASIGetNumOfControls(camera_index, noc) });
+    }
+
+    pub fn get_camera_info(asi_info: &mut AsiCameraInfo, camera_index: i32) {
+        utils::check_error_code(unsafe { ASIGetCameraProperty(asi_info, camera_index) });
+    }
+
+    pub fn get_control_value(
+        camera_index: i32,
+        control_type: i32,
+        value: &mut i64,
+        is_auto_set: &mut i32,
+    ) {
+        utils::check_error_code(unsafe {
+            ASIGetControlValue(camera_index, control_type, value, is_auto_set)
+        });
+    }
+
+    pub fn get_roi_format(
+        camera_id: i32,
+        width: &mut i32,
+        height: &mut i32,
+        bin: &mut i32,
+        img_type: &mut i32,
+    ) {
+        utils::check_error_code(unsafe {
+            ASIGetROIFormat(camera_id, width, height, bin, img_type)
+        });
     }
 
     pub mod structs {
@@ -200,6 +253,31 @@ pub mod asilib {
             pub is_trigger_cam: i32,
             // ZWO reserved
             pub unused: [u8; 16],
+        }
+
+        impl AsiCameraInfo {
+            pub fn new() -> Self {
+                Self {
+                    name: [0; 64],
+                    camera_id: 0,
+                    max_height: 0,
+                    max_width: 0,
+                    is_color_cam: 1,
+                    bayer_pattern: 1,
+                    supported_bins: [0; 16],
+                    supported_video_format: [0; 8],
+                    pixel_size: 0.0,
+                    mechanical_shutter: 0,
+                    st4_port: 0,
+                    is_cooler_cam: 0,
+                    is_usb3_host: 0,
+                    is_usb3_camera: 0,
+                    elec_per_adu: 0.0,
+                    bit_depth: 0,
+                    is_trigger_cam: 0,
+                    unused: [0; 16],
+                }
+            }
         }
 
         // struct the will be passed to the C function that stores the actual ROI set.
