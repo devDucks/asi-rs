@@ -1,7 +1,6 @@
 use asi_rs::asilib;
 use asi_rs::asilib::structs::{AsiCameraInfo, AsiControlCaps, ROIFormat};
 use convert_case::{Case, Casing};
-use dlopen::raw::Library;
 use lightspeed_astro::devices::actions::DeviceActions;
 use lightspeed_astro::props::Property;
 use log::{debug, info};
@@ -73,7 +72,6 @@ pub mod utils {
         use crate::ccd::AstroDevice;
         use crate::CcdDevice;
         use asi_rs::asilib;
-        use dlopen::raw::Library;
         use log::{debug, error, info};
         use rfitsio::fill_to_2880;
         use std::sync::{Arc, RwLock};
@@ -88,16 +86,6 @@ pub mod utils {
             img_type: i32,
             device: Arc<RwLock<CcdDevice>>,
         ) {
-            let lib = match Library::open("libASICamera2.so") {
-		Ok(so) => so,
-		Err(_) => panic!(
-                    "Couldn't find `libASICamera2.so` on the system, please make sure it is installed"
-		),
-            };
-
-            let get_data: extern "C" fn(camera_id: i32, buffer: &mut [u8], buf_size: i64) -> i32 =
-                unsafe { lib.symbol("ASIGetDataAfterExp") }.unwrap();
-
             info!("Actual width requested: {}", width);
             info!("Actual height requested: {}", height);
 
@@ -555,7 +543,6 @@ pub struct CcdDevice {
     id: Uuid,
     name: String,
     pub properties: Vec<Property>,
-    library: Library,
     index: i32,
     num_of_controls: i32,
     caps: Vec<AsiProperty>,
@@ -568,17 +555,10 @@ impl AstroDevice for CcdDevice {
     where
         Self: Sized,
     {
-        let lib = match Library::open("libASICamera2.so") {
-            Ok(so) => so,
-            Err(_) => panic!(
-                "Couldn't find `libASICamera2.so` on the system, please make sure it is installed"
-            ),
-        };
         let mut device = CcdDevice {
             id: Uuid::new_v4(),
             name: "".to_string(),
             properties: Vec::new(),
-            library: lib,
             index,
             num_of_controls: 0,
             caps: Vec::new(),
@@ -766,7 +746,6 @@ impl AsiCcd for CcdDevice {
     fn close(&self) {
         debug!("Closing camera {}", self.name);
         asilib::close_camera(self.index);
-        drop(&self.library);
     }
 
     fn get_control_caps(&mut self) {
