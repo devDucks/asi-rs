@@ -124,6 +124,16 @@ pub mod asilib {
         ) -> i32;
     }
 
+    #[link(name = "ASICamera2")]
+    extern "C" {
+        fn ASISetControlValue(
+            camera_index: i32,
+            control_type: i32,
+            value: i64,
+            is_auto_set: i32,
+        ) -> i32;
+    }
+
     pub fn start_exposure(camera_id: i32) {
         utils::check_error_code(unsafe { ASIStartExposure(camera_id) });
     }
@@ -184,6 +194,12 @@ pub mod asilib {
     ) {
         utils::check_error_code(unsafe {
             ASIGetControlValue(camera_index, control_type, value, is_auto_set)
+        });
+    }
+
+    pub fn set_control_value(camera_index: i32, control_type: i32, value: i64, is_auto_set: i32) {
+        utils::check_error_code(unsafe {
+            ASISetControlValue(camera_index, control_type, value, is_auto_set)
         });
     }
 
@@ -322,6 +338,37 @@ pub mod asilib {
                     unused: [0; 32],
                 }
             }
+        }
+
+        #[repr(C)]
+        pub enum AsiControlType {
+            AsiGain = 0,
+            AsiExposure,
+            AsiGamma,
+            AsiWbR,
+            AsiWbB,
+            AsiOffset,
+            AsiBandwidthoverload,
+            AsiOverclock,
+            // Returns 10*temperature
+            AsiTemperature,
+            AsiFlip,
+            AsiAautoMaxGain,
+            // In micro second
+            AsiAutoMaxExp,
+            // Target brightness
+            AsiAutoTargetBrightness,
+            AsiHardwareBin,
+            AsiHighSpeedMode,
+            AsiCoolerPowerPerc,
+            // Do not need *10
+            AsiTargetTemp,
+            AsiCoolerOn,
+            // Leads to less grid at software bin mode for color camera
+            AsiMonoBin,
+            AsiFanOn,
+            AsiPatternAdjust,
+            AsiAntiDewHeather,
         }
     }
 }

@@ -72,10 +72,10 @@ pub mod utils {
         use crate::ccd::AstroDevice;
         use crate::CcdDevice;
         use asi_rs::asilib;
+        use asi_rs::asilib::structs::AsiControlType;
         use log::{debug, error, info};
         use rfitsio::fill_to_2880;
         use std::sync::{Arc, RwLock};
-        use std::time::Duration;
         use std::time::SystemTime;
 
         pub fn expose(
@@ -100,7 +100,7 @@ pub mod utils {
 
             let secs_to_micros = length * num::pow(10i32, 6) as f32;
             info!("mu secs {}", secs_to_micros);
-            let duration = Duration::from_micros(secs_to_micros as u64);
+
             let mut image_buffer = Vec::with_capacity(buffer_size as usize);
             unsafe {
                 image_buffer.set_len(buffer_size as usize);
@@ -114,24 +114,35 @@ pub mod utils {
                 d.update_internal_property("exposure_status", "EXPOSING");
             }
 
+            // Set the value of the exposure on the driver
+            asilib::set_control_value(
+                camera_index,
+                AsiControlType::AsiExposure as i32,
+                secs_to_micros as i64,
+                0,
+            );
+
+            // Send the command to start the exposure
             asilib::start_exposure(camera_index);
+
+            // Check the status, when exposing it should be 1
+            asilib::exposure_status(camera_index, &mut status);
 
             let start = SystemTime::now();
 
-            while start.elapsed().unwrap().as_micros() < duration.as_micros() {
-                debug!("Elapsed: {}", start.elapsed().unwrap().as_micros());
-                debug!("Duration: {}", duration.as_micros());
+            // Loop until the status change
+            while status == 1 {
                 asilib::exposure_status(camera_index, &mut status);
-                info!("Status while exposing: {}", status);
-                match status {
-                    1 | 2 => (),
-                    n => error!("An error happened, the exposure status is {}", n),
-                }
-
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
-            asilib::stop_exposure(camera_index);
-            asilib::exposure_status(camera_index, &mut status);
+
+            info!("Elapsed: {}", start.elapsed().unwrap().as_micros());
+
+            match status {
+                2 => info!("Exposure successful"),
+                n => error!("An error happened, the exposure status is {}", n),
+            }
+
             info!("Status after exposure: {}", status);
 
             match status {
