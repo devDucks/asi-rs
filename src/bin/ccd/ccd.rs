@@ -169,7 +169,7 @@ pub mod utils {
 		),
             };
 
-            let mut naxis1 = String::new();
+            let naxis1;
             if width < 1000 {
                 naxis1 = format!(
                     "NAXIS1  =                 {}{} / length of data axis 1                          ",
@@ -182,7 +182,7 @@ pub mod utils {
 		);
             }
 
-            let mut naxis2 = String::new();
+            let naxis2;
             if height < 1000 {
                 naxis2 = format!(
                     "NAXIS2  =                 {}{} / length of data axis 2                          ",
@@ -238,7 +238,10 @@ pub mod utils {
 
             debug!("File len after filling image: {}", final_image.len());
 
-            match std::fs::write(format!("zwo-{}-001.fits", &device.read().unwrap().name), &final_image) {
+            match std::fs::write(
+                format!("zwo-{}-001.fits", &device.read().unwrap().name),
+                &final_image,
+            ) {
                 Ok(_) => debug!("FITS file saved correctly"),
                 Err(e) => error!("FITS file not saved on disk: {}", e),
             };
