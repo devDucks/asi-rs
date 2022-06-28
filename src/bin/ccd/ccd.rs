@@ -238,7 +238,7 @@ pub mod utils {
 
             debug!("File len after filling image: {}", final_image.len());
 
-            match std::fs::write("zwo001.fits", &final_image) {
+            match std::fs::write(format!("zwo-{}-001.fits", &device.read().unwrap().name), &final_image) {
                 Ok(_) => debug!("FITS file saved correctly"),
                 Err(e) => error!("FITS file not saved on disk: {}", e),
             };
