@@ -1,12 +1,20 @@
 fn main() {
     if cfg!(target_os = "macos") {
+        let path = std::fs::canonicalize("./lib/mac");
         println!("cargo:rustc-link-search=./lib/mac");
-        println!("cargo:rustc-link-arg=-Wl,-rpath,./lib/mac");
+        println!(
+            "cargo:rustc-link-arg=-Wl,-rpath,{}",
+            path.unwrap().display()
+        );
     };
 
     if cfg!(target_os = "linux") && cfg!(target_arch = "x86_64") {
+        let path = std::fs::canonicalize("./lib/linux/x64");
         println!("cargo:rustc-link-search=./lib/linux/x64");
-        println!("cargo:rustc-link-arg=-Wl,-rpath,./lib/linux/x64");
+        println!(
+            "cargo:rustc-link-arg=-Wl,-rpath,{}",
+            path.unwrap().display()
+        );
     };
 
     if cfg!(target_os = "linux") && cfg!(target_arch = "x86") {
