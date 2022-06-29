@@ -18,6 +18,7 @@ tonic-reflection = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread", "signal"] }
 convert_case = "0.5"
 rand = "0.8"
+libasi = { version = "0.1.0", path = "./libasi" }
 
 [dependencies.uuid]
 version = "1"

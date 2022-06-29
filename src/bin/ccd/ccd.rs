@@ -1,6 +1,5 @@
-use asi_rs::asilib;
-use asi_rs::asilib::structs::{AsiCameraInfo, AsiControlCaps, ROIFormat};
 use convert_case::{Case, Casing};
+use libasi::camera::{AsiCameraInfo, AsiControlCaps, ROIFormat};
 use lightspeed_astro::devices::actions::DeviceActions;
 use lightspeed_astro::props::Property;
 use log::{debug, info};
@@ -8,22 +7,19 @@ use std::time::Instant;
 use uuid::Uuid;
 
 pub mod utils {
-    use asi_rs::asilib;
-    use asi_rs::asilib::structs::{AsiCameraInfo, AsiControlCaps, AsiID};
     use lightspeed_astro::props::{Permission, Property};
     use log::{error, info, warn};
 
     pub mod generics {
         use crate::utils::asi_id_to_string;
-        use asi_rs::asilib;
-        use asi_rs::asilib::structs::AsiID;
+        use libasi::camera::{get_cam_id, set_cam_id, AsiID};
         use log::{debug, info};
         use rand::distributions::Alphanumeric;
         use rand::{thread_rng, Rng};
 
         pub fn get_camera_id(camera_index: i32) -> String {
             let mut id: AsiID = AsiID::new();
-            asilib::get_cam_id(camera_index, &mut id);
+            get_cam_id(camera_index, &mut id);
 
             // if the AsiID is a bunch of 0, we set a random ID and we dump it to the camera flash
             // memory. If you are wondering why, the reason is the following; one may want to use multiple
@@ -64,15 +60,16 @@ pub mod utils {
                 camera_index,
                 asi_id_to_string(&id.id)
             );
-            asilib::set_cam_id(camera_index, id);
+            set_cam_id(camera_index, id);
         }
     }
 
     pub mod capturing {
         use crate::ccd::AstroDevice;
         use crate::CcdDevice;
-        use asi_rs::asilib;
-        use asi_rs::asilib::structs::AsiControlType;
+        use libasi::camera::{
+            download_exposure, exposure_status, set_control_value, start_exposure,
+        };
         use log::{debug, error, info};
         use rfitsio::fill_to_2880;
         use std::sync::{Arc, RwLock};
@@ -115,24 +112,24 @@ pub mod utils {
             }
 
             // Set the value of the exposure on the driver
-            asilib::set_control_value(
+            set_control_value(
                 camera_index,
-                AsiControlType::AsiExposure as i32,
+                libasi::camera::ASI_CONTROL_TYPE_ASI_EXPOSURE as i32,
                 secs_to_micros as i64,
                 0,
             );
 
             // Send the command to start the exposure
-            asilib::start_exposure(camera_index);
+            start_exposure(camera_index);
 
             // Check the status, when exposing it should be 1
-            asilib::exposure_status(camera_index, &mut status);
+            exposure_status(camera_index, &mut status);
 
             let start = SystemTime::now();
 
             // Loop until the status change
             while status == 1 {
-                asilib::exposure_status(camera_index, &mut status);
+                exposure_status(camera_index, &mut status);
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
 
@@ -152,11 +149,7 @@ pub mod utils {
                         d.update_internal_property("exposure_status", "SUCCESS");
                     }
 
-                    asilib::download_exposure(
-                        camera_index,
-                        image_buffer.as_mut_ptr(),
-                        buffer_size.into(),
-                    );
+                    download_exposure(camera_index, image_buffer.as_mut_ptr(), buffer_size.into());
                 }
                 _ => error!("Exposure failed"),
             }
@@ -259,58 +252,20 @@ pub mod utils {
         }
     }
 
-    pub fn new_asi_info() -> AsiCameraInfo {
-        AsiCameraInfo {
-            name: [0; 64],
-            camera_id: 9,
-            max_height: 0,
-            max_width: 0,
-            is_color_cam: 1,
-            bayer_pattern: 1,
-            supported_bins: [5; 16],
-            supported_video_format: [0; 8],
-            pixel_size: 0.0,
-            mechanical_shutter: 1,
-            st4_port: 1,
-            is_cooler_cam: 1,
-            is_usb3_host: 1,
-            is_usb3_camera: 1,
-            elec_per_adu: 0.0,
-            bit_depth: 0,
-            is_trigger_cam: 1,
-            unused: [0; 16],
-        }
-    }
-
-    pub fn new_asi_controls_caps() -> AsiControlCaps {
-        AsiControlCaps {
-            name: [0; 64],
-            description: [0; 128],
-            max_value: 0,
-            min_value: 0,
-            default_value: 0,
-            is_auto_supported: 0,
-            is_writable: 0,
-            control_type: 0,
-            unused: [0; 32],
-        }
-    }
-
-    pub fn new_asi_id() -> AsiID {
-        AsiID { id: [0; 8] }
-    }
-
-    pub fn asi_name_to_string(name_array: &[u8]) -> String {
-        let mut index: usize = 0;
+    pub fn asi_name_to_string_i8(name_array: &[i8]) -> String {
+        let mut to_u8: Vec<u8> = vec![];
 
         // format the name dropping 0 from the name array
         for (_, el) in name_array.into_iter().enumerate() {
             if *el == 0 {
                 break;
             }
-            index += 1
+            match (*el).try_into() {
+                Ok(v) => to_u8.push(v),
+                Err(_) => to_u8.push(0x23),
+            }
         }
-        if let Ok(id) = std::str::from_utf8(&name_array[0..index]) {
+        if let Ok(id) = std::str::from_utf8(&to_u8) {
             id.to_string()
         } else {
             String::from("UNKNOWN")
@@ -377,7 +332,7 @@ pub mod utils {
         }
     }
 
-    pub fn bayer_pattern_to_str(n: &i32) -> &'static str {
+    pub fn bayer_pattern_to_str(n: &u32) -> &'static str {
         match n {
             0 => return "RG",
             1 => return "BG",
@@ -391,7 +346,7 @@ pub mod utils {
     }
 
     pub fn look_for_devices() -> i32 {
-        let num_of_devs = asilib::get_num_of_connected_cameras();
+        let num_of_devs = libasi::camera::get_num_of_connected_cameras();
 
         match num_of_devs {
             0 => warn!("No ZWO cameras found"),
@@ -688,8 +643,8 @@ impl AsiCcd for CcdDevice {
     }
     fn init_camera(&mut self) {
         debug!("Saying welcome to camera `{}`", self.name);
-        asilib::open_camera(self.index);
-        asilib::init_camera(self.index);
+        libasi::camera::open_camera(self.index);
+        libasi::camera::init_camera(self.index);
 
         // Check if we have a random generated id for the camera, if not generate one,
         // store it on the camera itself and assign it to self.ls_rand_id
@@ -749,7 +704,7 @@ impl AsiCcd for CcdDevice {
         debug!("Getting value for prop {}", cap.name);
         let mut is_auto_set = 0;
         let mut val: i64 = 0;
-        asilib::get_control_value(self.index, cap.control_type, &mut val, &mut is_auto_set);
+        libasi::camera::get_control_value(self.index, cap.control_type, &mut val, &mut is_auto_set);
         debug!(
             "Value for {} is {} - Auto adjusted? {}",
             cap.name, val, cap.is_writable
@@ -759,24 +714,24 @@ impl AsiCcd for CcdDevice {
 
     fn close(&self) {
         debug!("Closing camera {}", self.name);
-        asilib::close_camera(self.index);
+        libasi::camera::close_camera(self.index);
     }
 
     fn get_control_caps(&mut self) {
         for i in 0..self.num_of_controls {
             let mut control_caps = AsiControlCaps::new();
 
-            asilib::get_control_caps(self.index, i, &mut control_caps);
+            libasi::camera::get_control_caps(self.index, i, &mut control_caps);
 
             let cap = AsiProperty {
-                name: utils::asi_name_to_string(&control_caps.name).to_case(Case::Snake),
-                _description: utils::asi_name_to_string(&control_caps.description),
-                _max_value: control_caps.max_value,
-                _min_value: control_caps.min_value,
-                _default_value: control_caps.default_value,
-                _is_auto_supported: control_caps.is_auto_supported != 0,
-                is_writable: control_caps.is_writable != 0,
-                control_type: control_caps.control_type,
+                name: utils::asi_name_to_string_i8(&control_caps.Name).to_case(Case::Snake),
+                _description: utils::asi_name_to_string_i8(&control_caps.Description),
+                _max_value: control_caps.MaxValue,
+                _min_value: control_caps.MinValue,
+                _default_value: control_caps.DefaultValue,
+                _is_auto_supported: control_caps.IsAutoSupported != 0,
+                is_writable: control_caps.IsWritable != 0,
+                control_type: control_caps.ControlType as i32,
             };
             info!("Discovered capacity: {:?}", &cap.name);
             self.caps.push(cap);
@@ -785,7 +740,7 @@ impl AsiCcd for CcdDevice {
 
     fn get_num_of_controls(&self) -> i32 {
         let mut num_of_controls = 0;
-        asilib::get_num_of_controls(self.index, &mut num_of_controls);
+        libasi::camera::get_num_of_controls(self.index, &mut num_of_controls);
         info!(
             "Found: {} controls for camera {}",
             num_of_controls, self.name
@@ -811,73 +766,73 @@ impl AsiCcd for CcdDevice {
 
     fn init_camera_props(&mut self) {
         let mut info = AsiCameraInfo::new();
-        asilib::get_camera_info(&mut info, self.index);
+        libasi::camera::get_camera_info(&mut info, self.index);
 
         // Name the device now
-        self.name = utils::asi_name_to_string(&info.name);
-        self.index = info.camera_id;
+        self.name = utils::asi_name_to_string_i8(&info.Name);
+        self.index = info.CameraID;
 
         // 16 properties from AsiCameraInfo - unused and name are ignored
 
         debug!("ADDING CAMERA PROPERTIES");
         self.properties.push(utils::new_read_only_prop(
             "camera_id",
-            &info.camera_id.to_string(),
+            &info.CameraID.to_string(),
             "integer",
         ));
         self.properties.push(utils::new_read_only_prop(
             "max_height",
-            &info.max_height.to_string(),
+            &info.MaxHeight.to_string(),
             "integer",
         ));
         self.properties.push(utils::new_read_only_prop(
             "max_width",
-            &info.max_width.to_string(),
+            &info.MaxWidth.to_string(),
             "integer",
         ));
         self.properties.push(utils::new_read_only_prop(
             "is_color",
-            &info.is_color_cam.to_string(),
+            &info.IsColorCam.to_string(),
             "boolean",
         ));
         self.properties.push(utils::new_read_only_prop(
             "bayer_pattern",
-            utils::bayer_pattern_to_str(&info.bayer_pattern),
+            utils::bayer_pattern_to_str(&info.BayerPattern),
             "string",
         ));
         self.properties.push(utils::new_read_only_prop(
             "supported_bins",
-            &utils::int_to_binning_str(&info.supported_bins),
+            &utils::int_to_binning_str(&info.SupportedBins),
             "array",
         ));
         self.properties.push(utils::new_read_only_prop(
             "supported_video_formats",
-            &utils::int_to_image_type_array(&info.supported_video_format),
+            &utils::int_to_image_type_array(&info.SupportedVideoFormat),
             "array",
         ));
         self.properties.push(utils::new_read_only_prop(
             "pixel_size",
-            &info.pixel_size.to_string(),
+            &info.PixelSize.to_string(),
             "float",
         ));
         self.properties.push(utils::new_read_only_prop(
             "has_shutter",
-            &info.mechanical_shutter.to_string(),
+            &info.MechanicalShutter.to_string(),
             "boolean",
         ));
         self.properties.push(utils::new_read_only_prop(
             "st4",
-            &info.st4_port.to_string(),
+            &info.ST4Port.to_string(),
             "boolean",
         ));
         self.properties.push(utils::new_read_only_prop(
             "elec_per_adu",
-            &info.elec_per_adu.to_string(),
+            &info.ElecPerADU.to_string(),
             "float",
         ));
         self.properties.push(utils::new_read_only_prop(
             "bit_depth",
-            &info.bit_depth.to_string(),
+            &info.BitDepth.to_string(),
             "integer",
         ));
 
@@ -915,7 +870,13 @@ impl AsiCcd for CcdDevice {
         let mut bin = 0;
         let mut img_type = 0;
 
-        asilib::get_roi_format(self.index, &mut width, &mut height, &mut bin, &mut img_type);
+        libasi::camera::get_roi_format(
+            self.index,
+            &mut width,
+            &mut height,
+            &mut bin,
+            &mut img_type,
+        );
         info!(
             "ROI format => width: {} | height: {} | bin: {} | img type: {}",
             width, height, bin, img_type
