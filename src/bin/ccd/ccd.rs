@@ -112,12 +112,26 @@ pub mod utils {
             }
 
             // Set the value of the exposure on the driver
-            set_control_value(
-                camera_index,
-                libasi::camera::ASI_CONTROL_TYPE_ASI_EXPOSURE as i32,
-                secs_to_micros as i64,
-                0,
-            );
+
+            #[cfg(unix)]
+            {
+                set_control_value(
+                    camera_index,
+                    libasi::camera::ASI_CONTROL_TYPE_ASI_EXPOSURE as i32,
+                    secs_to_micros as i64,
+                    0,
+                );
+            }
+
+            #[cfg(windows)]
+            {
+                set_control_value(
+                    camera_index,
+                    libasi::camera::ASI_CONTROL_TYPE_ASI_EXPOSURE as i32,
+                    secs_to_micros as i32,
+                    0,
+                );
+            }
 
             // Send the command to start the exposure
             start_exposure(camera_index);
@@ -332,7 +346,22 @@ pub mod utils {
         }
     }
 
+    #[cfg(unix)]
     pub fn bayer_pattern_to_str(n: &u32) -> &'static str {
+        match n {
+            0 => return "RG",
+            1 => return "BG",
+            2 => return "GR",
+            3 => return "GB",
+            _ => {
+                error!("Bayer pattern not recognized");
+                return "UNKNOWN";
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn bayer_pattern_to_str(n: &i32) -> &'static str {
         match n {
             0 => return "RG",
             1 => return "BG",
@@ -497,12 +526,25 @@ pub trait AsiCcd {
     fn fetch_roi_props(&self) -> Vec<Property>;
 }
 
+#[cfg(unix)]
 pub struct AsiProperty {
     name: String,
     _description: String,
     _max_value: i64,
     _min_value: i64,
     _default_value: i64,
+    _is_auto_supported: bool,
+    is_writable: bool,
+    control_type: i32,
+}
+
+#[cfg(windows)]
+pub struct AsiProperty {
+    name: String,
+    _description: String,
+    _max_value: i32,
+    _min_value: i32,
+    _default_value: i32,
     _is_auto_supported: bool,
     is_writable: bool,
     control_type: i32,
@@ -703,7 +745,13 @@ impl AsiCcd for CcdDevice {
     fn get_control_value(&self, cap: &AsiProperty) -> i64 {
         debug!("Getting value for prop {}", cap.name);
         let mut is_auto_set = 0;
+
+        #[cfg(unix)]
         let mut val: i64 = 0;
+
+        #[cfg(windows)]
+        let mut val: i32 = 0;
+
         libasi::camera::get_control_value(self.index, cap.control_type, &mut val, &mut is_auto_set);
         debug!(
             "Value for {} is {} - Auto adjusted? {}",
