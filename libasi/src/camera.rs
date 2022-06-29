@@ -63,6 +63,12 @@ pub fn exposure_status(camera_id: i32, status: *mut u32) {
     check_error_code(unsafe { libasi_sys::ASIGetExpStatus(camera_id, status) });
 }
 
+#[cfg(windows)]
+pub fn download_exposure(camera_id: i32, buffer: *mut u8, buf_size: i32) {
+    check_error_code(unsafe { libasi_sys::ASIGetDataAfterExp(camera_id, buffer, buf_size) });
+}
+
+#[cfg(unix)]
 pub fn download_exposure(camera_id: i32, buffer: *mut u8, buf_size: i64) {
     check_error_code(unsafe { libasi_sys::ASIGetDataAfterExp(camera_id, buffer, buf_size) });
 }
@@ -103,6 +109,19 @@ pub fn get_camera_info(asi_info: *mut AsiCameraInfo, camera_index: i32) {
     check_error_code(unsafe { libasi_sys::ASIGetCameraProperty(asi_info, camera_index) });
 }
 
+#[cfg(windows)]
+pub fn get_control_value(
+    camera_index: i32,
+    control_type: i32,
+    value: &mut i32,
+    is_auto_set: &mut i32,
+) {
+    check_error_code(unsafe {
+        libasi_sys::ASIGetControlValue(camera_index, control_type, value, is_auto_set)
+    });
+}
+
+#[cfg(unix)]
 pub fn get_control_value(
     camera_index: i32,
     control_type: i32,
@@ -114,6 +133,14 @@ pub fn get_control_value(
     });
 }
 
+#[cfg(windows)]
+pub fn set_control_value(camera_index: i32, control_type: i32, value: i32, is_auto_set: i32) {
+    check_error_code(unsafe {
+        libasi_sys::ASISetControlValue(camera_index, control_type, value, is_auto_set)
+    });
+}
+
+#[cfg(unix)]
 pub fn set_control_value(camera_index: i32, control_type: i32, value: i64, is_auto_set: i32) {
     check_error_code(unsafe {
         libasi_sys::ASISetControlValue(camera_index, control_type, value, is_auto_set)
