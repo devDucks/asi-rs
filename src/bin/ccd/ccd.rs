@@ -511,7 +511,10 @@ pub trait AsiCcd {
     fn init_camera(&mut self);
     fn close(&self);
     fn get_control_caps(&mut self);
+    #[cfg(unix)]
     fn get_control_value(&self, cap: &AsiProperty) -> i64;
+    #[cfg(windows)]
+    fn get_control_value(&self, cap: &AsiProperty) -> i32;
     fn get_num_of_controls(&self) -> i32;
     fn init_camera_props(&mut self);
     fn asi_caps_to_lightspeed_props(&self) -> Vec<Property>;
