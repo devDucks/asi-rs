@@ -742,14 +742,24 @@ impl AsiCcd for CcdDevice {
         props
     }
 
+    #[cfg(unix)]
     fn get_control_value(&self, cap: &AsiProperty) -> i64 {
         debug!("Getting value for prop {}", cap.name);
         let mut is_auto_set = 0;
-
-        #[cfg(unix)]
         let mut val: i64 = 0;
 
-        #[cfg(windows)]
+        libasi::camera::get_control_value(self.index, cap.control_type, &mut val, &mut is_auto_set);
+        debug!(
+            "Value for {} is {} - Auto adjusted? {}",
+            cap.name, val, cap.is_writable
+        );
+        val
+    }
+
+    #[cfg(windows)]
+    fn get_control_value(&self, cap: &AsiProperty) -> i32 {
+        debug!("Getting value for prop {}", cap.name);
+        let mut is_auto_set = 0;
         let mut val: i32 = 0;
 
         libasi::camera::get_control_value(self.index, cap.control_type, &mut val, &mut is_auto_set);
