@@ -53,6 +53,12 @@ pub fn stop_exposure(camera_id: i32) {
     check_error_code(unsafe { libasi_sys::ASIStopExposure(camera_id) });
 }
 
+#[cfg(windows)]
+pub fn exposure_status(camera_id: i32, status: *mut i32) {
+    check_error_code(unsafe { libasi_sys::ASIGetExpStatus(camera_id, status) });
+}
+
+#[cfg(unix)]
 pub fn exposure_status(camera_id: i32, status: *mut u32) {
     check_error_code(unsafe { libasi_sys::ASIGetExpStatus(camera_id, status) });
 }
