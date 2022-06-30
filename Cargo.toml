@@ -3,7 +3,13 @@ name = "asi-rs"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[[bin]]
+name = "asi_ccd"
+path = "src/bin/ccd/main.rs"
+
+[[bin]]
+name = "asi_efw"
+path = "src/bin/efw/main.rs"
 
 [dependencies]
 libc = "0.2"
