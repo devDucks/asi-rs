@@ -54,7 +54,4 @@ fn main() {
             println!("cargo:rustc-link-arg=-Wl,-rpath,{}", &s_path);
         }
     }
-
-    println!("cargo:rustc-link-lib=stdc++");
-    println!("cargo:rustc-link-lib=std");
 }
