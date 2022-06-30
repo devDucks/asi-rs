@@ -1,5 +1,5 @@
 pub use libasi_sys::efw::*;
-use log::error;
+use log::{error, info};
 
 pub type EFWInfo = _EFW_INFO;
 pub type EFWId = _EFW_ID;
@@ -38,12 +38,10 @@ Return: length of the array.
 ***************************************************************************/
 //EFW_API int EFWGetProductIDs(int* pPIDs);
 
-pub fn get_efw_id(index: i32) -> i32 {
-    let mut id: i32 = 0;
+pub fn get_efw_id(index: i32, id: *mut i32) {
     check_error_code(
-	unsafe { libasi_sys::efw::EFWGetID(index, &mut id) }
+	unsafe { libasi_sys::efw::EFWGetID(index, id) }
     );
-    id
 }
 
 pub fn open_efw(id: i32) {
@@ -101,7 +99,14 @@ Return:
 EFW_ERROR_INVALID_ID: invalid ID value
 EFW_ERROR_CLOSED: not opened
 EFW_SUCCESS: operation succeeds
-***************************************************************************/
+ ***************************************************************************/
+pub fn is_unidirectional(id: i32) -> bool {
+    let mut unid: bool = false;
+    check_error_code(
+	unsafe { EFWGetDirection(id, &mut unid) }
+    );
+    unid
+}
 //EFW_API	EFW_ERROR_CODE EFWGetDirection(int ID, bool *bUnidirectional);
 
 /***************************************************************************
@@ -132,7 +137,11 @@ Return:
 EFW_ERROR_INVALID_ID: invalid ID value
 EFW_SUCCESS: operation succeeds
 ***************************************************************************/
-//EFW_API	EFW_ERROR_CODE EFWClose(int ID);
+pub fn close_efw(id: i32) {
+    check_error_code(
+	unsafe { EFWClose(id) }
+    );
+}
 
 /***************************************************************************
 Descriptions:

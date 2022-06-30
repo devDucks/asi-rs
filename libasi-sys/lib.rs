@@ -55,4 +55,20 @@ pub mod camera {
 
 pub mod efw {
     include!(concat!(env!("OUT_DIR"), "/efw_bindings.rs"));
+
+    impl _EFW_ID {
+        pub fn new() -> Self {
+	    Self { id: [0; 8] }
+        }
+    }
+
+    impl _EFW_INFO {
+	pub fn new() -> Self {
+	    Self {
+		ID: 0,
+		Name: [0; 64],
+		slotNum: 0,
+	    }
+	}
+    }
 }
