@@ -1,4 +1,4 @@
-pub use libasi_sys::*;
+pub use libasi_sys::camera::*;
 use log::error;
 
 pub type AsiCameraInfo = _ASI_CAMERA_INFO;
@@ -46,67 +46,67 @@ fn check_error_code(code: i32) {
 }
 
 pub fn start_exposure(camera_id: i32) {
-    check_error_code(unsafe { libasi_sys::ASIStartExposure(camera_id, 0) });
+    check_error_code(unsafe { libasi_sys::camera::ASIStartExposure(camera_id, 0) });
 }
 
 pub fn stop_exposure(camera_id: i32) {
-    check_error_code(unsafe { libasi_sys::ASIStopExposure(camera_id) });
+    check_error_code(unsafe { libasi_sys::camera::ASIStopExposure(camera_id) });
 }
 
 #[cfg(windows)]
 pub fn exposure_status(camera_id: i32, status: *mut i32) {
-    check_error_code(unsafe { libasi_sys::ASIGetExpStatus(camera_id, status) });
+    check_error_code(unsafe { libasi_sys::camera::ASIGetExpStatus(camera_id, status) });
 }
 
 #[cfg(unix)]
 pub fn exposure_status(camera_id: i32, status: *mut u32) {
-    check_error_code(unsafe { libasi_sys::ASIGetExpStatus(camera_id, status) });
+    check_error_code(unsafe { libasi_sys::camera::ASIGetExpStatus(camera_id, status) });
 }
 
 #[cfg(windows)]
 pub fn download_exposure(camera_id: i32, buffer: *mut u8, buf_size: i32) {
-    check_error_code(unsafe { libasi_sys::ASIGetDataAfterExp(camera_id, buffer, buf_size) });
+    check_error_code(unsafe { libasi_sys::camera::ASIGetDataAfterExp(camera_id, buffer, buf_size) });
 }
 
 #[cfg(unix)]
 pub fn download_exposure(camera_id: i32, buffer: *mut u8, buf_size: i64) {
-    check_error_code(unsafe { libasi_sys::ASIGetDataAfterExp(camera_id, buffer, buf_size) });
+    check_error_code(unsafe { libasi_sys::camera::ASIGetDataAfterExp(camera_id, buffer, buf_size) });
 }
 
 pub fn get_num_of_connected_cameras() -> i32 {
-    unsafe { libasi_sys::ASIGetNumOfConnectedCameras() }
+    unsafe { libasi_sys::camera::ASIGetNumOfConnectedCameras() }
 }
 
 pub fn get_cam_id(camera_id: i32, asi_id: *mut AsiID) {
-    check_error_code(unsafe { libasi_sys::ASIGetID(camera_id, asi_id) });
+    check_error_code(unsafe { libasi_sys::camera::ASIGetID(camera_id, asi_id) });
 }
 
 pub fn set_cam_id(camera_id: i32, asi_id: AsiID) {
-    check_error_code(unsafe { libasi_sys::ASISetID(camera_id, asi_id) });
+    check_error_code(unsafe { libasi_sys::camera::ASISetID(camera_id, asi_id) });
 }
 
 pub fn open_camera(camera_index: i32) {
-    check_error_code(unsafe { libasi_sys::ASIOpenCamera(camera_index) });
+    check_error_code(unsafe { libasi_sys::camera::ASIOpenCamera(camera_index) });
 }
 
 pub fn init_camera(camera_index: i32) {
-    check_error_code(unsafe { libasi_sys::ASIInitCamera(camera_index) });
+    check_error_code(unsafe { libasi_sys::camera::ASIInitCamera(camera_index) });
 }
 
 pub fn close_camera(camera_index: i32) {
-    check_error_code(unsafe { libasi_sys::ASICloseCamera(camera_index) });
+    check_error_code(unsafe { libasi_sys::camera::ASICloseCamera(camera_index) });
 }
 
 pub fn get_control_caps(camera_id: i32, index: i32, noc: *mut AsiControlCaps) {
-    check_error_code(unsafe { libasi_sys::ASIGetControlCaps(camera_id, index, noc) });
+    check_error_code(unsafe { libasi_sys::camera::ASIGetControlCaps(camera_id, index, noc) });
 }
 
 pub fn get_num_of_controls(camera_index: i32, noc: *mut i32) {
-    check_error_code(unsafe { libasi_sys::ASIGetNumOfControls(camera_index, noc) });
+    check_error_code(unsafe { libasi_sys::camera::ASIGetNumOfControls(camera_index, noc) });
 }
 
 pub fn get_camera_info(asi_info: *mut AsiCameraInfo, camera_index: i32) {
-    check_error_code(unsafe { libasi_sys::ASIGetCameraProperty(asi_info, camera_index) });
+    check_error_code(unsafe { libasi_sys::camera::ASIGetCameraProperty(asi_info, camera_index) });
 }
 
 #[cfg(windows)]
@@ -117,7 +117,7 @@ pub fn get_control_value(
     is_auto_set: &mut i32,
 ) {
     check_error_code(unsafe {
-        libasi_sys::ASIGetControlValue(camera_index, control_type, value, is_auto_set)
+        libasi_sys::camera::ASIGetControlValue(camera_index, control_type, value, is_auto_set)
     });
 }
 
@@ -129,21 +129,21 @@ pub fn get_control_value(
     is_auto_set: &mut i32,
 ) {
     check_error_code(unsafe {
-        libasi_sys::ASIGetControlValue(camera_index, control_type, value, is_auto_set)
+        libasi_sys::camera::ASIGetControlValue(camera_index, control_type, value, is_auto_set)
     });
 }
 
 #[cfg(windows)]
 pub fn set_control_value(camera_index: i32, control_type: i32, value: i32, is_auto_set: i32) {
     check_error_code(unsafe {
-        libasi_sys::ASISetControlValue(camera_index, control_type, value, is_auto_set)
+        libasi_sys::camera::ASISetControlValue(camera_index, control_type, value, is_auto_set)
     });
 }
 
 #[cfg(unix)]
 pub fn set_control_value(camera_index: i32, control_type: i32, value: i64, is_auto_set: i32) {
     check_error_code(unsafe {
-        libasi_sys::ASISetControlValue(camera_index, control_type, value, is_auto_set)
+        libasi_sys::camera::ASISetControlValue(camera_index, control_type, value, is_auto_set)
     });
 }
 
@@ -155,6 +155,6 @@ pub fn get_roi_format(
     img_type: &mut i32,
 ) {
     check_error_code(unsafe {
-        libasi_sys::ASIGetROIFormat(camera_id, width, height, bin, img_type)
+        libasi_sys::camera::ASIGetROIFormat(camera_id, width, height, bin, img_type)
     });
 }
