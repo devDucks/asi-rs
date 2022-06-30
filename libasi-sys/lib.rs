@@ -52,3 +52,7 @@ pub mod camera {
         }
     }
 }
+
+pub mod efw {
+    include!(concat!(env!("OUT_DIR"), "/efw_bindings.rs"));
+}
