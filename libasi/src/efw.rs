@@ -1,5 +1,5 @@
 pub use libasi_sys::efw::*;
-use log::{error, info};
+use log::{error};
 
 pub type EFWInfo = _EFW_INFO;
 pub type EFWId = _EFW_ID;
@@ -50,6 +50,17 @@ pub fn open_efw(id: i32) {
     );
 }
 
+pub fn check_wheel_is_moving(id: i32) -> bool {
+    let mut info = EFWInfo::new();
+    let status = unsafe { libasi_sys::efw::EFWGetProperty(id, &mut info) };
+
+    match status {
+	5 => return true,
+	_ => return false,
+    };
+}
+
+
 pub fn get_efw_property(id: i32, info: *mut EFWInfo) {
     check_error_code(
 	unsafe { libasi_sys::efw::EFWGetProperty(id, info) } 
@@ -61,45 +72,26 @@ pub fn get_efw_position(id: i32) -> i32 {
     check_error_code(
 	unsafe { libasi_sys::efw::EFWGetPosition(id, &mut position) }
     );
-    position
+    // To have users dealing with non 0 indexed values, we simply add always 1 to
+    // the 0 indexed position returned from the firmware
+    position + 1
 }
 
 pub fn set_efw_position(id: i32, position: i32) {
+    // To have users dealing with non 0 indexed values, we simply subtract always 1 to
+    // the 0 indexed position wanted by the user
+    let indexed_0_position = position -1;
     check_error_code(
-	unsafe { libasi_sys::efw::EFWSetPosition(id, position) }
+	unsafe { libasi_sys::efw::EFWSetPosition(id, indexed_0_position) }
     );
 }
 
-/***************************************************************************
-Descriptions:
-set unidirection of filter wheel
+pub fn set_unidirection(id: i32, flag: bool) {
+    check_error_code(
+	unsafe { EFWSetDirection(id, flag) }
+    );
+}
 
-Paras:
-int ID: the ID of filter wheel
-
-bool bUnidirectional: if set as true, the filter wheel will rotate along one direction
-
-Return: 
-EFW_ERROR_INVALID_ID: invalid ID value
-EFW_ERROR_CLOSED: not opened
-EFW_SUCCESS: operation succeeds
-***************************************************************************/
-//EFW_API	EFW_ERROR_CODE EFWSetDirection(int ID, bool bUnidirectional);
-
-/***************************************************************************
-Descriptions:
-get unidirection of filter wheel
-
-Paras:
-int ID: the ID of filter wheel
-
-bool *bUnidirectional: pointer to unidirection value .
-
-Return: 
-EFW_ERROR_INVALID_ID: invalid ID value
-EFW_ERROR_CLOSED: not opened
-EFW_SUCCESS: operation succeeds
- ***************************************************************************/
 pub fn is_unidirectional(id: i32) -> bool {
     let mut unid: bool = false;
     check_error_code(
@@ -107,24 +99,12 @@ pub fn is_unidirectional(id: i32) -> bool {
     );
     unid
 }
-//EFW_API	EFW_ERROR_CODE EFWGetDirection(int ID, bool *bUnidirectional);
 
-/***************************************************************************
-Descriptions:
-calibrate filter wheel
-
-Paras:
-int ID: the ID of filter wheel
-
-Return: 
-EFW_ERROR_INVALID_ID: invalid ID value
-EFW_ERROR_CLOSED: not opened
-EFW_SUCCESS: operation succeeds
-EFW_ERROR_MOVING: filter wheel is moving, should wait until idle
-EFW_ERROR_ERROR_STATE: filter wheel is in error state
-EFW_ERROR_REMOVED: filter wheel is removed
-***************************************************************************/
-//EFW_API	EFW_ERROR_CODE EFWCalibrate(int ID);
+pub fn calibrate_wheel(id: i32) {
+    check_error_code(
+	unsafe { EFWCalibrate(id) }
+    );
+}
 
 /***************************************************************************
 Descriptions:

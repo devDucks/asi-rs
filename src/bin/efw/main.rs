@@ -5,16 +5,13 @@ use lightspeed_astro::devices::actions::DeviceActions;
 use lightspeed_astro::devices::ProtoDevice;
 use lightspeed_astro::props::SetPropertyRequest;
 use lightspeed_astro::props::SetPropertyResponse;
-use lightspeed_astro::request::CcdExposureRequest;
-use lightspeed_astro::request::CcdExposureResponse;
-use lightspeed_astro::request::GetDevicesRequest;
-use lightspeed_astro::response::GetDevicesResponse;
-use lightspeed_astro::server::astro_service_server::AstroService;
-use lightspeed_astro::server::astro_service_server::AstroServiceServer;
+use lightspeed_astro::request::{EfwCalibrationRequest, GetDevicesRequest};
+use lightspeed_astro::response::{EfwCalibrationResponse, GetDevicesResponse};
+use lightspeed_astro::server::astro_efw_service_server::AstroEfwService;
+use lightspeed_astro::server::astro_efw_service_server::AstroEfwServiceServer;
 use log::{debug, error, info};
 use tonic::{transport::Server, Request, Response, Status};
 
-use std::net::TcpListener;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -39,7 +36,7 @@ impl AsiEfwDriver {
 }
 
 #[tonic::async_trait]
-impl AstroService for AsiEfwDriver {
+impl AstroEfwService for AsiEfwDriver {
     async fn get_devices(
         &self,
         request: Request<GetDevicesRequest>,
@@ -69,11 +66,33 @@ impl AstroService for AsiEfwDriver {
         }
     }
 
-    async fn expose(
+    async fn calibrate(
         &self,
-        request: Request<CcdExposureRequest>,
-    ) -> Result<Response<CcdExposureResponse>, Status> {
-        let reply = CcdExposureResponse { data: vec![] };
+        request: Request<EfwCalibrationRequest>,
+    ) -> Result<Response<EfwCalibrationResponse>, Status> {
+        let message = request.get_ref();
+        let dev_id = message.id.clone();
+        let devices: Vec<Arc<RwLock<EfwDevice>>> = self.devices.clone();
+
+        for d in devices.iter() {
+            {
+                let device = d.read().unwrap();
+                let index = device.get_index().clone();
+                let d2 = Arc::clone(d);
+
+                if device.get_id().to_string() == dev_id {
+                    info!("Dispatching calibration task in a new thread...");
+                    tokio::task::spawn_blocking(move || {
+                        efw::calibrate(index, d2);
+                        info!("Task ended");
+                    });
+                }
+            }
+        }
+
+        let reply = EfwCalibrationResponse {
+            status: String::from("OK"),
+        };
         Ok(Response::new(reply))
     }
 
@@ -136,7 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap();
 
     let host = "127.0.0.1";
-    let addr = build_server_address(host);
+    let addr = astrotools::utils::build_server_address(host);
     let driver = AsiEfwDriver::new();
 
     let mut devices_for_fetching = Vec::new();
@@ -160,7 +179,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Server::builder()
         .add_service(reflection_service)
-        .add_service(AstroServiceServer::new(driver))
+        .add_service(AstroEfwServiceServer::new(driver))
         .serve_with_shutdown(addr, async move {
             match tokio::signal::ctrl_c().await {
                 Ok(_) => {
@@ -176,19 +195,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     Ok(())
-}
-
-fn port_is_available(host: &str, port: u16) -> bool {
-    match TcpListener::bind((host, port)) {
-        Ok(_) => true,
-        Err(_) => false,
-    }
-}
-fn build_server_address(host: &str) -> std::net::SocketAddr {
-    let port = {
-        (50051..50651)
-            .find(|port| port_is_available(host, *port))
-            .unwrap()
-    };
-    format!("{host}:{port}").parse().unwrap()
 }

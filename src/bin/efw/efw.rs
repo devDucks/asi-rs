@@ -1,7 +1,13 @@
+use std::str::FromStr;
+use std::sync::{Arc, RwLock};
+
 use lightspeed_astro::devices::actions::DeviceActions;
 use lightspeed_astro::props::Property;
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use uuid::Uuid;
+
+const CALIBRATION_OFF: &str = "off";
+const CALIBRATION_ON: &str = "on";
 
 pub fn look_for_devices() -> i32 {
     let num_of_devs = libasi::efw::get_num_of_connected_devices();
@@ -11,6 +17,26 @@ pub fn look_for_devices() -> i32 {
         _ => info!("Found {} ZWO EFW(s)", num_of_devs),
     }
     num_of_devs
+}
+
+pub fn calibrate(camera_index: i32, device: Arc<RwLock<EfwDevice>>) {
+    debug!("Calibrating wheel");
+
+    {
+        let mut d = device.write().unwrap();
+        d.update_internal_property("calibration", CALIBRATION_ON);
+    }
+
+    libasi::efw::calibrate_wheel(camera_index);
+
+    while libasi::efw::check_wheel_is_moving(camera_index) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    {
+        let mut d = device.write().unwrap();
+        d.update_internal_property("calibration", CALIBRATION_OFF);
+    }
 }
 
 pub trait AstroDevice {
@@ -64,13 +90,13 @@ pub trait AstroDevice {
 pub trait AsiEfw {
     fn init_device(&mut self);
     fn close(&self);
+    fn get_index(&self) -> i32;
     fn init_device_props(&mut self);
     fn get_info(&self) -> libasi::efw::EFWInfo;
     fn get_position(&self) -> i32;
-    fn set_position(&mut self, position: i32);
-    fn set_direction(&mut self);
+    fn set_position(&self, position: i32);
+    fn set_unidirection(&self, flag: bool);
     fn is_unidirectional(&self) -> bool;
-    fn calibrate(&mut self);
 }
 
 pub struct EfwDevice {
@@ -124,37 +150,97 @@ impl AstroDevice for EfwDevice {
         &self.properties
     }
 
-    /// Method to be used when receving requests from clients to update properties.
-    ///
-    /// Ideally this should call internally `update_property_remote` which will be
-    /// responsible to trigger the action against the device to update the property
-    /// on the device itself, if the action is successful the last thing this method
-    /// does would be to update the property inside `self.properties`.
     fn update_property(&mut self, prop_name: &str, val: &str) -> Result<(), DeviceActions> {
-        self.set_position(val.parse::<i32>().unwrap());
-        Ok(())
+        if let Some(idx) = self.find_property_index(prop_name) {
+            let prop = self.properties.get(idx).unwrap();
+
+            match prop.permission {
+                0 => Err(DeviceActions::CannotUpdateReadOnlyProperty),
+                _ => match self.update_property_remote(prop_name, val) {
+                    Ok(()) => {
+                        let prop = self.properties.get_mut(idx).unwrap();
+                        prop.value = val.to_owned();
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        info!("Update property remote failed");
+                        return Err(e);
+                    }
+                },
+            }
+        } else {
+            Err(DeviceActions::UnknownProperty)
+        }
     }
 
-    /// Method used internally by the driver itself to change values for properties that
-    /// be manipulated by the user (like the exposure ones)
     fn update_internal_property(
         &mut self,
         prop_name: &str,
         val: &str,
     ) -> Result<(), DeviceActions> {
-        Ok(())
+        info!(
+            "driver updating internal property {} with {}",
+            prop_name, val
+        );
+        if let Some(prop_idx) = self.find_property_index(prop_name) {
+            let mut prop = self.properties.get_mut(prop_idx).unwrap();
+            prop.value = val.to_string();
+            Ok(())
+        } else {
+            Err(DeviceActions::UnknownProperty)
+        }
     }
 
     fn update_property_remote(&mut self, prop_name: &str, val: &str) -> Result<(), DeviceActions> {
-        Ok(())
+        match prop_name {
+            "actual_slot" => {
+                if let Ok(num) = val.parse::<i32>() {
+                    match num {
+                        1..=5 => {
+                            self.set_position(num);
+                            Ok(())
+                        }
+                        _ => Err(DeviceActions::InvalidValue),
+                    }
+                } else {
+                    Err(DeviceActions::InvalidValue)
+                }
+            }
+            "unidirectional" => {
+                if let Ok(flag) = FromStr::from_str(val) {
+                    self.set_unidirection(flag);
+                    Ok(())
+                } else {
+                    info!("Parsing failed");
+                    Err(DeviceActions::InvalidValue)
+                }
+            }
+            _ => Err(DeviceActions::InvalidValue), // Update to InvalidProperty
+        }
     }
 
     fn find_property_index(&self, prop_name: &str) -> Option<usize> {
-        None
+        let mut index = 256;
+
+        for (idx, prop) in self.properties.iter().enumerate() {
+            if prop.name == prop_name {
+                index = idx;
+                break;
+            }
+        }
+        if index == 256 {
+            return None;
+        } else {
+            return Some(index);
+        }
     }
 }
 
 impl AsiEfw for EfwDevice {
+    fn get_index(&self) -> i32 {
+        self.index
+    }
+
     fn init_device(&mut self) {
         libasi::efw::open_efw(self.index);
         let efw_info = self.get_info();
@@ -183,9 +269,15 @@ impl AsiEfw for EfwDevice {
         ));
 
         self.properties.push(asi_rs::utils::new_read_write_prop(
-            "direction",
+            "unidirectional",
             &self.is_unidirectional().to_string(),
             "bool",
+        ));
+
+        self.properties.push(asi_rs::utils::new_read_only_prop(
+            "calibration",
+            CALIBRATION_OFF,
+            "string",
         ));
     }
 
@@ -199,17 +291,18 @@ impl AsiEfw for EfwDevice {
         libasi::efw::get_efw_position(self.index)
     }
 
-    fn set_position(&mut self, position: i32) {
+    fn set_position(&self, position: i32) {
         debug!("Setting position {}", position);
-        libasi::efw::set_efw_position(self.index, position)
+        libasi::efw::set_efw_position(self.index, position);
     }
 
-    fn set_direction(&mut self) {}
+    fn set_unidirection(&self, flag: bool) {
+        debug!("Setting unidirectional state to {}", flag);
+        libasi::efw::set_unidirection(self.index, flag);
+    }
 
     fn is_unidirectional(&self) -> bool {
         debug!("Checking unidirectional state");
         libasi::efw::is_unidirectional(self.index)
     }
-
-    fn calibrate(&mut self) {}
 }
