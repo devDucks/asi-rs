@@ -2,20 +2,20 @@ pub mod efw;
 use efw::EfwDevice;
 use env_logger::Env;
 use lightspeed_astro::devices::actions::DeviceActions;
-use lightspeed_astro::devices::ProtoDevice;
-use lightspeed_astro::props::SetPropertyRequest;
-use lightspeed_astro::props::SetPropertyResponse;
+use lightspeed_astro::devices::AstroDevice;
+use lightspeed_astro::request::SetPropertyRequest;
 use lightspeed_astro::request::{EfwCalibrationRequest, GetDevicesRequest};
+use lightspeed_astro::response::SetPropertyResponse;
 use lightspeed_astro::response::{EfwCalibrationResponse, GetDevicesResponse};
-use lightspeed_astro::server::astro_efw_service_server::AstroEfwService;
-use lightspeed_astro::server::astro_efw_service_server::AstroEfwServiceServer;
+use lightspeed_astro::service::astro_efw_service_server::AstroEfwService;
+use lightspeed_astro::service::astro_efw_service_server::AstroEfwServiceServer;
 use log::{debug, error, info};
 use tonic::{transport::Server, Request, Response, Status};
 
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use crate::efw::{AsiEfw, AstroDevice};
+use crate::efw::{AsiEfw, BaseAstroDevice};
 
 #[derive(Default, Clone)]
 struct AsiEfwDriver {
@@ -53,7 +53,7 @@ impl AstroEfwService for AsiEfwDriver {
             let mut devices = Vec::new();
             for dev in self.devices.iter() {
                 let device = dev.read().unwrap();
-                let d = ProtoDevice {
+                let d = AstroDevice {
                     id: device.get_id().to_string(),
                     name: device.get_name().to_owned(),
                     family: 3,

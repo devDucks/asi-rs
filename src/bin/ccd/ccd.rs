@@ -65,7 +65,7 @@ pub mod utils {
     }
 
     pub mod capturing {
-        use crate::ccd::AstroDevice;
+        use crate::ccd::BaseAstroDevice;
         use crate::CcdDevice;
         use libasi::camera::{
             download_exposure, exposure_status, set_control_value, start_exposure,
@@ -459,7 +459,7 @@ pub mod utils {
         representation
     }
 }
-pub trait AstroDevice {
+pub trait BaseAstroDevice {
     /// Main and only entrypoint to create a new serial device.
     ///
     /// A device that doesn't work/cannot communicate with is not really useful
@@ -564,7 +564,7 @@ pub struct CcdDevice {
     ls_rand_id: [u8; 8],
 }
 
-impl AstroDevice for CcdDevice {
+impl BaseAstroDevice for CcdDevice {
     fn new(index: i32) -> Self
     where
         Self: Sized,
