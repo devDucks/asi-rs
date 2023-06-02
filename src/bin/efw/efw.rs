@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 
 use lightspeed_astro::devices::actions::DeviceActions;
 use lightspeed_astro::props::Property;
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use uuid::Uuid;
 
 const CALIBRATION_OFF: &str = "off";
@@ -39,7 +39,7 @@ pub fn calibrate(camera_index: i32, device: Arc<RwLock<EfwDevice>>) {
     }
 }
 
-pub trait AstroDevice {
+pub trait BaseAstroDevice {
     /// Main and only entrypoint to create a new serial device.
     ///
     /// A device that doesn't work/cannot communicate with is not really useful
@@ -108,7 +108,7 @@ pub struct EfwDevice {
     slots_num: i32,
 }
 
-impl AstroDevice for EfwDevice {
+impl BaseAstroDevice for EfwDevice {
     fn new(index: i32) -> Self
     where
         Self: Sized,

@@ -18,7 +18,7 @@ log = "0.4"
 rfitsio = { git = "https://github.com/devducks/rfitsio", tag = "v0.2.0" }
 num = "0.4"
 astrotools = "0.4"
-lightspeed-astro = "0.8"
+lightspeed-astro = "1"
 tonic = "0.7"
 tonic-reflection = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread", "signal"] }

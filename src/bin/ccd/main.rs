@@ -1,15 +1,16 @@
 use crate::ccd::utils::look_for_devices;
 use crate::ccd::AsiCcd;
 use lightspeed_astro::devices::actions::DeviceActions;
-use lightspeed_astro::devices::ProtoDevice;
-use lightspeed_astro::props::{SetPropertyRequest, SetPropertyResponse};
+use lightspeed_astro::devices::AstroDevice;
+use lightspeed_astro::request::SetPropertyRequest;
 use lightspeed_astro::request::{CcdExposureRequest, CcdExposureResponse, GetDevicesRequest};
 use lightspeed_astro::response::GetDevicesResponse;
-use lightspeed_astro::server::astro_service_server::{AstroService, AstroServiceServer};
+use lightspeed_astro::response::SetPropertyResponse;
+use lightspeed_astro::service::astro_ccd_service_server::{AstroCcdService, AstroCcdServiceServer};
 use log::{debug, error, info};
 use tonic::{transport::Server, Request, Response, Status};
 pub mod ccd;
-use crate::ccd::AstroDevice;
+use crate::ccd::BaseAstroDevice;
 use ccd::utils;
 use ccd::CcdDevice;
 use env_logger::Env;
@@ -37,7 +38,7 @@ impl AsiCcdDriver {
 }
 
 #[tonic::async_trait]
-impl AstroService for AsiCcdDriver {
+impl AstroCcdService for AsiCcdDriver {
     async fn get_devices(
         &self,
         request: Request<GetDevicesRequest>,
@@ -54,7 +55,7 @@ impl AstroService for AsiCcdDriver {
             let mut devices = Vec::new();
             for dev in self.devices.iter() {
                 let device = dev.read().unwrap();
-                let d = ProtoDevice {
+                let d = AstroDevice {
                     id: device.get_id().to_string(),
                     name: device.get_name().to_owned(),
                     family: 0,
@@ -198,7 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Server::builder()
         .add_service(reflection_service)
-        .add_service(AstroServiceServer::new(driver))
+        .add_service(AstroCcdServiceServer::new(driver))
         .serve_with_shutdown(addr, async move {
             match tokio::signal::ctrl_c().await {
                 Ok(_) => {
