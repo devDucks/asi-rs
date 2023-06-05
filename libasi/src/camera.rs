@@ -5,7 +5,7 @@ pub type AsiCameraInfo = _ASI_CAMERA_INFO;
 pub type AsiControlCaps = _ASI_CONTROL_CAPS;
 pub type AsiID = _ASI_ID;
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct ROIFormat {
     pub width: i32,
     pub height: i32,
