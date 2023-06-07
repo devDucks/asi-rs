@@ -8,6 +8,10 @@ name = "asi_ccd"
 path = "src/bin/ccd/main.rs"
 
 [[bin]]
+name = "asi_ccd_mqtt"
+path = "src/bin/ccd/mqtt.rs"
+
+[[bin]]
 name = "asi_efw"
 path = "src/bin/efw/main.rs"
 
@@ -21,10 +25,14 @@ astrotools = "0.4"
 lightspeed-astro = "1.1"
 tonic = "0.9"
 tonic-reflection = "0.9"
-tokio = { version = "1", features = ["rt-multi-thread", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "signal", "tracing"] }
 convert_case = "0.5"
 rand = "0.8"
 libasi = { version = "0.1.0", path = "./libasi" }
+serde = { version = "1.0.163", features = ["derive"] }
+serde_json = "1.0.96"
+rumqttc = "0.21.0"
+console-subscriber = "0.1.9"
 
 [dependencies.uuid]
 version = "1"
