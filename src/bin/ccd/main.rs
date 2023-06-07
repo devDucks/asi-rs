@@ -17,6 +17,7 @@ use env_logger::Env;
 use std::net::TcpListener;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use std::time::Instant;
 use tokio::task;
 
 #[derive(Default, Clone)]
@@ -48,8 +49,11 @@ impl AstroCcdService for AsiCcdDriver {
             request.remote_addr()
         );
 
+        let now = Instant::now();
         if self.devices.is_empty() {
             let reply = GetDevicesResponse { devices: vec![] };
+            let elapsed = now.elapsed();
+            info!("Refreshed and publishing state took: {:.2?}", elapsed);
             Ok(Response::new(reply))
         } else {
             let mut devices = Vec::new();
@@ -64,6 +68,8 @@ impl AstroCcdService for AsiCcdDriver {
                 devices.push(d);
             }
             let reply = GetDevicesResponse { devices: devices };
+            let elapsed = now.elapsed();
+            info!("Refreshed and publishing state took: {:.2?}", elapsed);
             Ok(Response::new(reply))
         }
     }
@@ -190,7 +196,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
+                let now = Instant::now();
                 device.write().unwrap().fetch_props();
+                let elapsed = now.elapsed();
+                info!("Refreshed state took: {:.2?}", elapsed);
             }
         });
     }
