@@ -12,6 +12,10 @@ name = "asi_ccd_mqtt"
 path = "src/bin/ccd/mqtt.rs"
 
 [[bin]]
+name = "test_camera"
+path = "src/bin/test/main.rs"
+
+[[bin]]
 name = "asi_efw"
 path = "src/bin/efw/main.rs"
 
