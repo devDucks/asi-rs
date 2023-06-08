@@ -23,7 +23,7 @@ fn main() {
 
         let mut sum = std::time::Duration::new(0, 0);
 
-        for i in 0..50 {
+        for _ in 0..50 {
             let now = Instant::now();
             for cap in &caps {
                 let mut is_auto_set = 0;
