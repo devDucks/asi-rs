@@ -141,7 +141,7 @@ pub fn set_control_value(camera_index: i32, control_type: i32, value: i32, is_au
 }
 
 #[cfg(unix)]
-pub fn set_control_value(camera_index: i32, control_type: i32, value: i64, is_auto_set: i32) {
+pub fn set_control_value(camera_index: i32, control_type: i32, value: ::std::os::raw::c_long, is_auto_set: i32) {
     check_error_code(unsafe {
         libasi_sys::camera::ASISetControlValue(camera_index, control_type, value, is_auto_set)
     });
@@ -156,5 +156,29 @@ pub fn get_roi_format(
 ) {
     check_error_code(unsafe {
         libasi_sys::camera::ASIGetROIFormat(camera_id, width, height, bin, img_type)
+    });
+}
+
+pub fn set_roi_format(
+    camera_id: i32,
+    width: i32,
+    height: i32,
+    bin: i32,
+    img_type: i32,
+) {
+    check_error_code(unsafe {
+        libasi_sys::camera::ASISetROIFormat(camera_id, width, height, bin, img_type)
+    });
+}
+
+pub fn get_start_position(cam_idx: i32, start_x: &mut i32, start_y: &mut i32) {
+    check_error_code(unsafe {
+        libasi_sys::camera::ASIGetStartPos(cam_idx, start_x, start_y)
+    });
+}
+
+pub fn get_camera_mode(cam_idx: i32, camera_mode: &mut i32) {
+    check_error_code(unsafe {
+        libasi_sys::camera::ASIGetCameraMode(cam_idx, camera_mode)
     });
 }

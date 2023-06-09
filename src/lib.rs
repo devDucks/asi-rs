@@ -1,6 +1,4 @@
 pub mod utils {
-    use lightspeed_astro::props::{Permission, Property};
-
     pub fn asi_name_to_string(name_array: &[i8]) -> String {
         let mut to_u8: Vec<u8> = vec![];
 
@@ -35,24 +33,6 @@ pub mod utils {
             id.to_string()
         } else {
             String::from("UNKNOWN")
-        }
-    }
-
-    pub fn new_read_only_prop(name: &str, value: &str, kind: &str) -> Property {
-        Property {
-            name: name.to_string(),
-            value: value.to_string(),
-            kind: kind.to_string(),
-            permission: Permission::ReadOnly as i32,
-        }
-    }
-
-    pub fn new_read_write_prop(name: &str, value: &str, kind: &str) -> Property {
-        Property {
-            name: name.to_string(),
-            value: value.to_string(),
-            kind: kind.to_string(),
-            permission: Permission::ReadWrite as i32,
         }
     }
 }
