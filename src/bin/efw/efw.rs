@@ -1,8 +1,7 @@
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
-use lightspeed_astro::devices::actions::DeviceActions;
-use lightspeed_astro::props::Property;
+use astrotools::properties::{Permission, Prop, Property, RangeProperty};
 use log::{debug, info, warn};
 use uuid::Uuid;
 
@@ -93,10 +92,6 @@ pub trait AsiEfw {
     fn get_index(&self) -> i32;
     fn init_device_props(&mut self);
     fn get_info(&self) -> libasi::efw::EFWInfo;
-    fn get_position(&self) -> i32;
-    fn set_position(&self, position: i32);
-    fn set_unidirection(&self, flag: bool);
-    fn is_unidirectional(&self) -> bool;
 }
 
 pub struct EfwDevice {
@@ -129,7 +124,7 @@ impl BaseAstroDevice for EfwDevice {
     }
 
     fn fetch_props(&mut self) {
-        let actual = self.get_position();
+        let actual = self.actual_slot();
 
         let prop = self.properties.get_mut(1).unwrap();
 
@@ -197,7 +192,7 @@ impl BaseAstroDevice for EfwDevice {
                 if let Ok(num) = val.parse::<i32>() {
                     match num {
                         1..=5 => {
-                            self.set_position(num);
+                            self.set_slot(num);
                             Ok(())
                         }
                         _ => Err(DeviceActions::InvalidValue),
@@ -264,7 +259,7 @@ impl AsiEfw for EfwDevice {
 
         self.properties.push(asi_rs::utils::new_read_write_prop(
             "actual_slot",
-            &self.get_position().to_string(),
+            &self.actual_slot().to_string(),
             "integer",
         ));
 
@@ -286,23 +281,34 @@ impl AsiEfw for EfwDevice {
         libasi::efw::get_efw_property(self.index, &mut efw_info);
         efw_info
     }
+}
 
-    fn get_position(&self) -> i32 {
+impl FilterWheel for EfwDevice {
+    fn actual_slot(&self) -> i32 {
         libasi::efw::get_efw_position(self.index)
     }
 
-    fn set_position(&self, position: i32) {
+    fn set_slot(&self, position: i32) {
         debug!("Setting position {}", position);
         libasi::efw::set_efw_position(self.index, position);
     }
 
     fn set_unidirection(&self, flag: bool) {
         debug!("Setting unidirectional state to {}", flag);
-        libasi::efw::set_unidirection(self.index, flag);
+        if self.is_unidirectional() {
+            libasi::efw::set_unidirection(self.index, flag);
+        };
     }
 
     fn is_unidirectional(&self) -> bool {
         debug!("Checking unidirectional state");
         libasi::efw::is_unidirectional(self.index)
     }
+}
+
+trait FilterWheel {
+    fn actual_slot(&self) -> i32;
+    fn set_slot(&self, slot: i32);
+    fn set_unidirection(&self, flag: bool);
+    fn is_unidirectional(&self) -> bool;
 }
