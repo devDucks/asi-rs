@@ -90,8 +90,8 @@ async fn main() {
                 .await
                 .unwrap();
                 let elapsed = now.elapsed();
-                info!("Refreshed and publishing state took: {:.2?}", elapsed);
-                tokio::time::sleep(Duration::from_millis(1000)).await;
+                debug!("Refreshed and publishing state took: {:.2?}", elapsed);
+                tokio::time::sleep(Duration::from_millis(2500)).await;
             }
         });
     }
@@ -101,10 +101,43 @@ async fn main() {
         match event {
             Incoming(inc) => match inc {
                 Publish(data) => {
-                    info!(
-                        "received message from topic: {}\nmessage: {:?}",
-                        &data.topic, &data.payload
-                    );
+                    // All topics are in the form of devices/{UUID}/{action} so let's
+                    // take advantage of this fact and avoid a string split
+                    match &data.topic[45..data.topic.len()] {
+                        "update" => {
+                            info!(
+                                "received message from topic: {}\nmessage: {:?}",
+                                &data.topic, &data.payload
+                            );
+                            let device = &data.topic[8..44];
+                            for d in &driver.devices {
+                                if device == &d.read().unwrap().id.to_string() {
+                                    d.write().unwrap().update_property("img_type", 1)
+                                }
+                            }
+                        }
+                        "expose" => {
+                            let device = &data.topic[8..44];
+                            info!("mqtt id: `{}`", &device);
+
+                            for d in &driver.devices {
+                                info!("device id: `{}`", &d.read().unwrap().id.to_string());
+                                if device == &d.read().unwrap().id.to_string() {
+                                    let device = Arc::clone(d);
+                                    let _c = client.clone();
+                                    task::spawn_blocking(move || {
+                                        utils::capturing::expose(
+                                            2.0,
+                                            libasi::camera::ASI_IMG_TYPE_ASI_IMG_RGB24,
+                                            device,
+                                        );
+                                        info!("Task ended");
+                                    });
+                                }
+                            }
+                        }
+                        _ => (),
+                    }
                 }
                 _ => debug!("Incoming event: {:?}", inc),
             },
