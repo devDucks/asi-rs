@@ -16,21 +16,21 @@ name = "asi_efw"
 path = "src/bin/efw/main.rs"
 
 [dependencies]
-libc = "0.2"
-env_logger = "0.11"
-log = "0.4"
-rfitsio = { git = "https://github.com/devducks/rfitsio", tag = "v0.3.0" }
-num = "0.4"
 astrotools = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "signal", "tracing"] }
+base64 = "0.22.1"
+console-subscriber = "0.5"
 convert_case = "0.11"
-rand = "0.10"
+env_logger = "0.11"
 libasi = { version = "0.2.0", path = "./libasi" }
+libc = "0.2"
+log = "0.4"
+num = "0.4"
+rand = "0.10"
+rfitsio = { git = "https://github.com/devducks/rfitsio", tag = "v0.3.0" }
+rumqttc = "0.25.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-rumqttc = "0.25.1"
-console-subscriber = "0.5"
-base64 = "0.22.1"
+tokio = { version = "1", features = ["rt-multi-thread", "signal", "tracing"] }
 
 [dependencies.uuid]
 version = "1"
