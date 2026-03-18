@@ -36,3 +36,72 @@ pub mod utils {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::utils::*;
+
+    // --- asi_name_to_string tests ---
+
+    #[test]
+    fn test_asi_name_to_string_normal_ascii() {
+        // "ZWO" encoded as i8, null-terminated
+        let name: Vec<i8> = vec![90, 87, 79, 0, 0, 0];
+        assert_eq!(asi_name_to_string(&name), "ZWO");
+    }
+
+    #[test]
+    fn test_asi_name_to_string_stops_at_null() {
+        // "AB\0CD" — should stop at the null and return "AB"
+        let name: Vec<i8> = vec![65, 66, 0, 67, 68];
+        assert_eq!(asi_name_to_string(&name), "AB");
+    }
+
+    #[test]
+    fn test_asi_name_to_string_empty_array() {
+        let name: Vec<i8> = vec![0, 0, 0];
+        assert_eq!(asi_name_to_string(&name), "");
+    }
+
+    #[test]
+    fn test_asi_name_to_string_all_chars_before_null() {
+        // "ASI" with no trailing null — entire array is used
+        let name: Vec<i8> = vec![65, 83, 73];
+        assert_eq!(asi_name_to_string(&name), "ASI");
+    }
+
+    #[test]
+    fn test_asi_name_to_string_negative_i8_replaced_with_hash() {
+        // i8 value -1 cannot convert to u8, gets replaced with '#' (0x23 = 35)
+        let name: Vec<i8> = vec![65, -1, 66, 0];
+        let result = asi_name_to_string(&name);
+        // 'A' + '#' + 'B' = "A#B"
+        assert_eq!(result, "A#B");
+    }
+
+    // --- asi_id_to_string tests ---
+
+    #[test]
+    fn test_asi_id_to_string_normal_ascii() {
+        let id: Vec<u8> = vec![65, 66, 67, 0, 0];
+        assert_eq!(asi_id_to_string(&id), "ABC");
+    }
+
+    #[test]
+    fn test_asi_id_to_string_stops_at_null() {
+        let id: Vec<u8> = vec![65, 0, 66, 67];
+        assert_eq!(asi_id_to_string(&id), "A");
+    }
+
+    #[test]
+    fn test_asi_id_to_string_all_zeros_returns_empty() {
+        let id: Vec<u8> = vec![0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(asi_id_to_string(&id), "");
+    }
+
+    #[test]
+    fn test_asi_id_to_string_full_array_no_null() {
+        let id: Vec<u8> = vec![65, 83, 73, 67, 65, 77, 49, 50];
+        assert_eq!(asi_id_to_string(&id), "ASICAM12");
+    }
+}

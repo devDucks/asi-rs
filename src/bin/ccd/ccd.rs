@@ -419,6 +419,141 @@ pub mod utils {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::utils::*;
+
+    // --- int_to_binning_str tests ---
+
+    #[test]
+    fn test_int_to_binning_str_single_value() {
+        assert_eq!(int_to_binning_str(&[1, 0, 0, 0]), "1x1");
+    }
+
+    #[test]
+    fn test_int_to_binning_str_multiple_values() {
+        assert_eq!(int_to_binning_str(&[1, 2, 3, 0]), "1x1,2x2,3x3");
+    }
+
+    #[test]
+    fn test_int_to_binning_str_stops_at_zero() {
+        // Zero acts as a sentinel: values after it are ignored
+        assert_eq!(int_to_binning_str(&[1, 2, 0, 4]), "1x1,2x2");
+    }
+
+    #[test]
+    fn test_int_to_binning_str_all_values() {
+        assert_eq!(int_to_binning_str(&[1, 2, 3, 4]), "1x1,2x2,3x3,4x4");
+    }
+
+    // --- int_to_image_type tests ---
+
+    #[test]
+    fn test_int_to_image_type_raw8() {
+        assert_eq!(int_to_image_type(0), "RAW8");
+    }
+
+    #[test]
+    fn test_int_to_image_type_rgb24() {
+        assert_eq!(int_to_image_type(1), "RGB24");
+    }
+
+    #[test]
+    fn test_int_to_image_type_raw16() {
+        assert_eq!(int_to_image_type(2), "RAW16");
+    }
+
+    #[test]
+    fn test_int_to_image_type_y8() {
+        assert_eq!(int_to_image_type(3), "Y8");
+    }
+
+    #[test]
+    fn test_int_to_image_type_end() {
+        assert_eq!(int_to_image_type(-1), "END");
+    }
+
+    #[test]
+    fn test_int_to_image_type_unknown() {
+        assert_eq!(int_to_image_type(99), "UNKNOWN");
+    }
+
+    // --- int_to_image_type_array tests ---
+
+    #[test]
+    fn test_int_to_image_type_array_stops_at_minus_one() {
+        // -1 is the end sentinel
+        assert_eq!(int_to_image_type_array(&[0, 1, -1, 2]), "RAW8RGB24");
+    }
+
+    #[test]
+    fn test_int_to_image_type_array_single() {
+        assert_eq!(int_to_image_type_array(&[2, -1]), "RAW16");
+    }
+
+    #[test]
+    fn test_int_to_image_type_array_empty_sentinel_first() {
+        assert_eq!(int_to_image_type_array(&[-1, 0, 1]), "");
+    }
+
+    #[test]
+    fn test_int_to_image_type_array_all_types() {
+        assert_eq!(int_to_image_type_array(&[0, 1, 2, 3, -1]), "RAW8RGB24RAW16Y8");
+    }
+
+    // --- asi_name_to_string_i8 tests ---
+
+    #[test]
+    fn test_asi_name_to_string_i8_normal() {
+        let name: Vec<i8> = vec![90, 87, 79, 0]; // "ZWO"
+        assert_eq!(asi_name_to_string_i8(&name), "ZWO");
+    }
+
+    #[test]
+    fn test_asi_name_to_string_i8_stops_at_null() {
+        let name: Vec<i8> = vec![65, 0, 66, 67]; // "A\0BC"
+        assert_eq!(asi_name_to_string_i8(&name), "A");
+    }
+
+    #[test]
+    fn test_asi_name_to_string_i8_empty() {
+        let name: Vec<i8> = vec![0, 0];
+        assert_eq!(asi_name_to_string_i8(&name), "");
+    }
+
+    // --- bayer_pattern_to_str tests ---
+
+    #[cfg(unix)]
+    #[test]
+    fn test_bayer_pattern_rg() {
+        assert_eq!(bayer_pattern_to_str(&0u32), "RG");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_bayer_pattern_bg() {
+        assert_eq!(bayer_pattern_to_str(&1u32), "BG");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_bayer_pattern_gr() {
+        assert_eq!(bayer_pattern_to_str(&2u32), "GR");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_bayer_pattern_gb() {
+        assert_eq!(bayer_pattern_to_str(&3u32), "GB");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_bayer_pattern_unknown() {
+        assert_eq!(bayer_pattern_to_str(&99u32), "UNKNOWN");
+    }
+}
+
 #[derive(Debug)]
 pub struct AsiProperty {
     name: String,
