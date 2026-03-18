@@ -28,7 +28,7 @@ rand = "0.10"
 libasi = { version = "0.2.0", path = "./libasi" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-rumqttc = "0.21.0"
+rumqttc = "0.25.1"
 console-subscriber = "0.5"
 base64 = "0.22.1"
 
