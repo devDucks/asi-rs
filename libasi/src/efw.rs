@@ -1,182 +1,154 @@
 pub use libasi_sys::efw::*;
-use log::{error};
 
 pub type EFWInfo = _EFW_INFO;
 pub type EFWId = _EFW_ID;
 
-fn check_error_code(code: i32) {
-    match code {
-	0 => (),
-	1 => error!("EFW_ERROR_INVALID_INDEX"),
-	2 => error!("EFW_ERROR_INVALID_ID"),
-	3 => error!("EFW_ERROR_INVALID_VALUE"),
-	// Failed to find the filter wheel, maybe the filter wheel has been removed
-	4 => error!("EFW_ERROR_REMOVED"),
-	// Filter wheel is moving
-	5 => error!("EFW_ERROR_MOVING"),
-	6 => error!("EFW_ERROR_ERROR_STATE"),
-	7 => error!("EFW_ERROR_GENERAL_ERROR"),
-	8 => error!("EFW_ERROR_NOT_SUPPORTED"),
-	9 => error!("EFW_ERROR_CLOSED"),
-	-1 => error!("EFW_ERROR_END"),
-	_ => error!("UNKNOWN_ERROR"),
+/// All error codes returned by the ASI EFW (filter wheel) SDK.
+#[derive(Debug, PartialEq)]
+pub enum EfwError {
+    InvalidIndex,
+    InvalidId,
+    InvalidValue,
+    Removed,
+    Moving,
+    ErrorState,
+    GeneralError,
+    NotSupported,
+    Closed,
+    End,
+    Unknown(i32),
+}
+
+impl std::fmt::Display for EfwError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
     }
 }
 
-pub fn get_num_of_connected_devices() -> i32 {
-    unsafe { libasi_sys::efw::EFWGetNum() }
+pub(crate) fn map_error_code(code: i32) -> Result<(), EfwError> {
+    match code {
+        0 => Ok(()),
+        1 => Err(EfwError::InvalidIndex),
+        2 => Err(EfwError::InvalidId),
+        3 => Err(EfwError::InvalidValue),
+        4 => Err(EfwError::Removed),
+        5 => Err(EfwError::Moving),
+        6 => Err(EfwError::ErrorState),
+        7 => Err(EfwError::GeneralError),
+        8 => Err(EfwError::NotSupported),
+        9 => Err(EfwError::Closed),
+        -1 => Err(EfwError::End),
+        e => Err(EfwError::Unknown(e)),
+    }
 }
 
-/***************************************************************************
-Descriptions:
-get the product ID of each wheel, at first set pPIDs as 0 and get length and then malloc a buffer to load the PIDs
-
-Paras:
-int* pPIDs: pointer to array of PIDs
-
-Return: length of the array.
-***************************************************************************/
-//EFW_API int EFWGetProductIDs(int* pPIDs);
-
-pub fn get_efw_id(index: i32, id: *mut i32) {
-    check_error_code(
-	unsafe { libasi_sys::efw::EFWGetID(index, id) }
-    );
+/// Abstraction over the ASI EFW hardware. Implement this trait to inject a mock
+/// for unit testing without physical hardware.
+pub trait EfwHardware: Send + Sync {
+    fn get_num_of_connected_devices(&self) -> i32;
+    /// Returns the SDK-level device ID for the given enumeration index.
+    fn get_id(&self, index: i32) -> Result<i32, EfwError>;
+    fn open(&self, id: i32) -> Result<(), EfwError>;
+    fn close(&self, id: i32) -> Result<(), EfwError>;
+    fn get_property(&self, id: i32) -> Result<EFWInfo, EfwError>;
+    /// Returns the current filter position (1-indexed, user-facing).
+    fn get_position(&self, id: i32) -> Result<i32, EfwError>;
+    /// Moves to the given filter position (1-indexed, user-facing).
+    fn set_position(&self, id: i32, position: i32) -> Result<(), EfwError>;
+    fn set_direction(&self, id: i32, unidirectional: bool) -> Result<(), EfwError>;
+    fn get_direction(&self, id: i32) -> Result<bool, EfwError>;
+    fn calibrate(&self, id: i32) -> Result<(), EfwError>;
+    fn is_moving(&self, id: i32) -> bool;
 }
 
-pub fn open_efw(id: i32) {
-    check_error_code(
-	unsafe { libasi_sys::efw::EFWOpen(id) }
-    );
+/// Real hardware implementation that delegates to the ZWO EFW SDK via FFI.
+pub struct RealEfw;
+
+impl EfwHardware for RealEfw {
+    fn get_num_of_connected_devices(&self) -> i32 {
+        unsafe { libasi_sys::efw::EFWGetNum() }
+    }
+
+    fn get_id(&self, index: i32) -> Result<i32, EfwError> {
+        let mut id: i32 = 0;
+        map_error_code(unsafe { libasi_sys::efw::EFWGetID(index, &mut id) })?;
+        Ok(id)
+    }
+
+    fn open(&self, id: i32) -> Result<(), EfwError> {
+        map_error_code(unsafe { libasi_sys::efw::EFWOpen(id) })
+    }
+
+    fn close(&self, id: i32) -> Result<(), EfwError> {
+        map_error_code(unsafe { libasi_sys::efw::EFWClose(id) })
+    }
+
+    fn get_property(&self, id: i32) -> Result<EFWInfo, EfwError> {
+        let mut info = EFWInfo::new();
+        map_error_code(unsafe { libasi_sys::efw::EFWGetProperty(id, &mut info) })?;
+        Ok(info)
+    }
+
+    fn get_position(&self, id: i32) -> Result<i32, EfwError> {
+        let mut position: i32 = 0;
+        map_error_code(unsafe { libasi_sys::efw::EFWGetPosition(id, &mut position) })?;
+        // Convert from 0-indexed SDK value to 1-indexed user-facing value.
+        Ok(position + 1)
+    }
+
+    fn set_position(&self, id: i32, position: i32) -> Result<(), EfwError> {
+        // Convert from 1-indexed user-facing value to 0-indexed SDK value.
+        map_error_code(unsafe { libasi_sys::efw::EFWSetPosition(id, position - 1) })
+    }
+
+    fn set_direction(&self, id: i32, unidirectional: bool) -> Result<(), EfwError> {
+        map_error_code(unsafe { EFWSetDirection(id, unidirectional) })
+    }
+
+    fn get_direction(&self, id: i32) -> Result<bool, EfwError> {
+        let mut unid: bool = false;
+        map_error_code(unsafe { EFWGetDirection(id, &mut unid) })?;
+        Ok(unid)
+    }
+
+    fn calibrate(&self, id: i32) -> Result<(), EfwError> {
+        map_error_code(unsafe { EFWCalibrate(id) })
+    }
+
+    fn is_moving(&self, id: i32) -> bool {
+        let mut info = EFWInfo::new();
+        // The SDK signals movement via return code 5 (EFW_ERROR_MOVING).
+        let status = unsafe { libasi_sys::efw::EFWGetProperty(id, &mut info) };
+        status == 5
+    }
 }
 
-pub fn check_wheel_is_moving(id: i32) -> bool {
-    let mut info = EFWInfo::new();
-    let status = unsafe { libasi_sys::efw::EFWGetProperty(id, &mut info) };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    match status {
-	5 => return true,
-	_ => return false,
-    };
+    #[test]
+    fn test_map_error_code_success() {
+        assert_eq!(map_error_code(0), Ok(()));
+    }
+
+    #[test]
+    fn test_map_error_code_all_known_variants() {
+        assert_eq!(map_error_code(1), Err(EfwError::InvalidIndex));
+        assert_eq!(map_error_code(2), Err(EfwError::InvalidId));
+        assert_eq!(map_error_code(3), Err(EfwError::InvalidValue));
+        assert_eq!(map_error_code(4), Err(EfwError::Removed));
+        assert_eq!(map_error_code(5), Err(EfwError::Moving));
+        assert_eq!(map_error_code(6), Err(EfwError::ErrorState));
+        assert_eq!(map_error_code(7), Err(EfwError::GeneralError));
+        assert_eq!(map_error_code(8), Err(EfwError::NotSupported));
+        assert_eq!(map_error_code(9), Err(EfwError::Closed));
+        assert_eq!(map_error_code(-1), Err(EfwError::End));
+    }
+
+    #[test]
+    fn test_map_error_code_unknown() {
+        assert_eq!(map_error_code(99), Err(EfwError::Unknown(99)));
+        assert_eq!(map_error_code(-99), Err(EfwError::Unknown(-99)));
+    }
 }
-
-
-pub fn get_efw_property(id: i32, info: *mut EFWInfo) {
-    check_error_code(
-	unsafe { libasi_sys::efw::EFWGetProperty(id, info) } 
-    );
-}
-
-pub fn get_efw_position(id: i32) -> i32 {
-    let mut position: i32 = 0;
-    check_error_code(
-	unsafe { libasi_sys::efw::EFWGetPosition(id, &mut position) }
-    );
-    // To have users dealing with non 0 indexed values, we simply add always 1 to
-    // the 0 indexed position returned from the firmware
-    position + 1
-}
-
-pub fn set_efw_position(id: i32, position: i32) {
-    // To have users dealing with non 0 indexed values, we simply subtract always 1 to
-    // the 0 indexed position wanted by the user
-    let indexed_0_position = position -1;
-    check_error_code(
-	unsafe { libasi_sys::efw::EFWSetPosition(id, indexed_0_position) }
-    );
-}
-
-pub fn set_unidirection(id: i32, flag: bool) {
-    check_error_code(
-	unsafe { EFWSetDirection(id, flag) }
-    );
-}
-
-pub fn is_unidirectional(id: i32) -> bool {
-    let mut unid: bool = false;
-    check_error_code(
-	unsafe { EFWGetDirection(id, &mut unid) }
-    );
-    unid
-}
-
-pub fn calibrate_wheel(id: i32) {
-    check_error_code(
-	unsafe { EFWCalibrate(id) }
-    );
-}
-
-/***************************************************************************
-Descriptions:
-close filter wheel
-
-Paras:
-int ID: the ID of filter wheel
-
-Return: 
-EFW_ERROR_INVALID_ID: invalid ID value
-EFW_SUCCESS: operation succeeds
-***************************************************************************/
-pub fn close_efw(id: i32) {
-    check_error_code(
-	unsafe { EFWClose(id) }
-    );
-}
-
-/***************************************************************************
-Descriptions:
-get version string, like "0, 4, 0824"
-***************************************************************************/
-//EFW_API char* EFWGetSDKVersion();
-
-
-/***************************************************************************
-Descriptions:
-get hardware error code of filter wheel
-
-Paras:
-int ID: the ID of filter wheel
-
-bool *pErrCode: pointer to error code .
-
-Return: 
-EFW_ERROR_INVALID_ID: invalid ID value
-EFW_ERROR_CLOSED: not opened
-EFW_SUCCESS: operation succeeds
-***************************************************************************/
-//EFW_API EFW_ERROR_CODE EFWGetHWErrorCode(int ID, int *pErrCode);
-
-/***************************************************************************
-Descriptions:
-Get firmware version of filter wheel
-
-Paras:
-int ID: the ID of filter wheel
-
-int *major, int *minor, int *build: pointer to value.
-
-Return: 
-EFW_ERROR_INVALID_ID: invalid ID value
-EFW_ERROR_CLOSED: not opened
-EFW_SUCCESS: operation succeeds
-***************************************************************************/
-//EFW_API	EFW_ERROR_CODE EFWGetFirmwareVersion(int ID, unsigned char *major, unsigned char *minor, unsigned char *build);
-
-/***************************************************************************
-Descriptions:
-Get the serial number from a EFW
-
-Paras:
-int ID: the ID of focuser
-
-EFW_SN* pSN: pointer to SN
-
-Return: 
-EFW_ERROR_INVALID_ID: invalid ID value
-EFW_ERROR_CLOSED: not opened
-EFW_ERROR_NOT_SUPPORTED: the firmware does not support serial number
-EFW_SUCCESS: operation succeeds
-***************************************************************************/
-//EFW_API EFW_ERROR_CODE EFWGetSerialNumber(int ID, EFW_SN* pSN);
-
-//EFW_API EFW_ERROR_CODE EFWSetID(int ID, EFW_ID alias);

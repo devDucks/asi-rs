@@ -11,6 +11,7 @@ use uuid::Uuid;
 pub mod ccd;
 use ccd::utils;
 use ccd::AsiCamera;
+use libasi::camera::RealCamera;
 use std::time::Instant;
 
 use rumqttc::Event::{Incoming, Outgoing};
@@ -23,11 +24,12 @@ struct AsiCcd {
 
 impl AsiCcd {
     fn new() -> Self {
-        let found = utils::look_for_devices();
+        let hw = Arc::new(RealCamera);
+        let found = utils::look_for_devices(hw.as_ref());
         let mut devices: Vec<Arc<RwLock<AsiCamera>>> = Vec::with_capacity(found as usize);
 
         for idx in 0..found {
-            let device = Arc::new(RwLock::new(AsiCamera::new(idx)));
+            let device = Arc::new(RwLock::new(AsiCamera::new(idx, Arc::clone(&hw))));
             devices.push(device)
         }
 

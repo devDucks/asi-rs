@@ -1,34 +1,30 @@
+use libasi::camera::{CameraHardware, RealCamera};
 use std::time::Instant;
 
-fn get_roi(idx: i32) {
-    let mut width = 20;
-    let mut height = 20;
-    let mut bin = 20;
-    let mut img_type = 20;
-    libasi::camera::get_roi_format(idx, &mut width, &mut height, &mut bin, &mut img_type);
-    println!(
-        "Width: {}\nHeight: {}\nBin: {}\nType: {}",
-        width, height, bin, img_type
-    )
+fn get_roi(idx: i32, hw: &dyn CameraHardware) {
+    match hw.get_roi_format(idx) {
+        Ok(roi) => println!(
+            "Width: {}\nHeight: {}\nBin: {}\nType: {}",
+            roi.width, roi.height, roi.bin, roi.img_type
+        ),
+        Err(e) => eprintln!("get_roi_format failed: {:?}", e),
+    }
 }
 
-fn expose(idx: i32) -> u32 {
-    let mut e_val = 0;
-    libasi::camera::get_control_value(
-        idx,
-        libasi::camera::ASI_CONTROL_TYPE_ASI_EXPOSURE as i32,
-        &mut e_val,
-        &mut 0,
-    );
-    println!("Exp time: {}", e_val);
-    println!("Exposing");
-    libasi::camera::start_exposure(idx);
+fn expose(idx: i32, hw: &dyn CameraHardware) -> u32 {
+    match hw.get_control_value(idx, libasi::camera::ASI_CONTROL_TYPE_ASI_EXPOSURE as i32) {
+        Ok(v) => println!("Exp time: {}", v),
+        Err(e) => eprintln!("get_control_value failed: {:?}", e),
+    }
 
-    let mut status = 0;
-    libasi::camera::exposure_status(idx, &mut status);
+    println!("Exposing");
+    hw.start_exposure(idx)
+        .unwrap_or_else(|e| eprintln!("start_exposure failed: {:?}", e));
+
+    let mut status = hw.exposure_status(idx).unwrap_or(0);
 
     while status == 1 {
-        libasi::camera::exposure_status(idx, &mut status);
+        status = hw.exposure_status(idx).unwrap_or(0);
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     println!("Exposure status: {}", &status);
@@ -36,101 +32,80 @@ fn expose(idx: i32) -> u32 {
 }
 
 fn main() {
-    let num_of_devs = libasi::camera::get_num_of_connected_cameras();
+    let hw = RealCamera;
+    let num_of_devs = hw.get_num_of_connected_cameras();
     println!("Found {} camera(s)", &num_of_devs);
 
     for idx in 0..num_of_devs {
         println!("Probing camera {}", &idx);
-        libasi::camera::open_camera(idx);
-        libasi::camera::init_camera(idx);
+        hw.open_camera(idx)
+            .unwrap_or_else(|e| eprintln!("open_camera failed: {:?}", e));
+        hw.init_camera(idx)
+            .unwrap_or_else(|e| eprintln!("init_camera failed: {:?}", e));
 
-        let mut num_of_controls = 0;
-        libasi::camera::get_num_of_controls(idx, &mut num_of_controls);
+        let num_of_controls = hw.get_num_of_controls(idx).unwrap_or(0);
         println!("Found: {} controls for camera {}", num_of_controls, idx);
 
         let mut caps = Vec::with_capacity(num_of_controls as usize);
-
         for c_id in 0..num_of_controls {
             let mut control_caps = libasi::camera::AsiControlCaps::new();
-            libasi::camera::get_control_caps(idx, c_id, &mut control_caps);
+            hw.get_control_caps(idx, c_id, &mut control_caps)
+                .unwrap_or_else(|e| eprintln!("get_control_caps failed: {:?}", e));
             caps.push(control_caps);
         }
 
         let mut sum = std::time::Duration::new(0, 0);
-
         for _ in 0..50 {
             let now = Instant::now();
             for cap in &caps {
-                let mut is_auto_set = 0;
-                let mut val: i64 = 0;
-
-                libasi::camera::get_control_value(
-                    idx,
-                    cap.ControlType as i32,
-                    &mut val,
-                    &mut is_auto_set,
-                );
+                hw.get_control_value(idx, cap.ControlType as i32).ok();
             }
-            let elapsed = now.elapsed();
-            //println!("Reading all props took: {:.2?}", elapsed);
-            sum += elapsed;
+            sum += now.elapsed();
         }
-
         println!("Run average: {:.2?}", sum / 50);
 
-        get_roi(idx);
-        //libasi::camera::set_roi_format(idx, 64, 64, 1, 1);
-        //get_roi(idx);
+        get_roi(idx, &hw);
 
-        let mut start_x = 50;
-        let mut start_y = 50;
+        match hw.get_start_position(idx) {
+            Ok((x, y)) => println!("Start X: {}, Start Y: {}", x, y),
+            Err(e) => eprintln!("get_start_position failed: {:?}", e),
+        }
 
-        libasi::camera::get_start_position(idx, &mut start_x, &mut start_y);
-        println!("Start X: {}, Start Y: {}", start_x, start_y);
+        match hw.get_control_value(idx, libasi::camera::ASI_CONTROL_TYPE_ASI_EXPOSURE as i32) {
+            Ok(v) => println!("Exp before: {}", v),
+            Err(e) => eprintln!("get_control_value failed: {:?}", e),
+        }
 
-        let mut e_val = 0;
-        libasi::camera::get_control_value(
-            idx,
-            libasi::camera::ASI_CONTROL_TYPE_ASI_EXPOSURE as i32,
-            &mut e_val,
-            &mut 0,
-        );
-        println!("Exp before: {}", e_val);
+        match hw.get_camera_mode(idx) {
+            Ok(m) => println!("Camera mode: {}", m),
+            Err(e) => eprintln!("get_camera_mode failed: {:?}", e),
+        }
 
-        let length: ::std::os::raw::c_long = 10_000_000;
-
-        let mut cmode = 100;
-
-        libasi::camera::get_camera_mode(idx, &mut cmode);
-        println!("Camera mode: {}", cmode);
-
-        libasi::camera::set_control_value(
+        let length: i64 = 10_000_000;
+        hw.set_control_value(
             idx,
             libasi::camera::ASI_CONTROL_TYPE_ASI_EXPOSURE as i32,
             length,
             libasi::camera::ASI_BOOL_ASI_FALSE as i32,
-        );
-        let mut e_val = 0;
-        libasi::camera::get_control_value(
-            idx,
-            libasi::camera::ASI_CONTROL_TYPE_ASI_EXPOSURE as i32,
-            &mut e_val,
-            &mut 0,
-        );
-        println!("Exp after: {}", e_val);
+        )
+        .unwrap_or_else(|e| eprintln!("set_control_value failed: {:?}", e));
+
+        match hw.get_control_value(idx, libasi::camera::ASI_CONTROL_TYPE_ASI_EXPOSURE as i32) {
+            Ok(v) => println!("Exp after: {}", v),
+            Err(e) => eprintln!("get_control_value failed: {:?}", e),
+        }
 
         let mut counter = 0;
-
-        while expose(idx) == 3_u32 {
+        while expose(idx, &hw) == 3_u32 {
             std::thread::sleep(std::time::Duration::from_millis(500));
-            expose(idx);
+            expose(idx, &hw);
             counter += 1;
-
             if counter > 5 {
                 break;
             }
         }
 
-        libasi::camera::close_camera(idx);
+        hw.close_camera(idx)
+            .unwrap_or_else(|e| eprintln!("close_camera failed: {:?}", e));
     }
 }

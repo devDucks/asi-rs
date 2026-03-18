@@ -1,6 +1,7 @@
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
+use libasi::efw::{EFWInfo, EfwHardware};
 use lightspeed_astro::devices::actions::DeviceActions;
 use lightspeed_astro::props::Property;
 use log::{debug, info, warn};
@@ -9,9 +10,8 @@ use uuid::Uuid;
 const CALIBRATION_OFF: &str = "off";
 const CALIBRATION_ON: &str = "on";
 
-pub fn look_for_devices() -> i32 {
-    let num_of_devs = libasi::efw::get_num_of_connected_devices();
-
+pub fn look_for_devices(hw: &dyn EfwHardware) -> i32 {
+    let num_of_devs = hw.get_num_of_connected_devices();
     match num_of_devs {
         0 => warn!("No ZWO EFW found"),
         _ => info!("Found {} ZWO EFW(s)", num_of_devs),
@@ -24,66 +24,47 @@ pub fn calibrate(camera_index: i32, device: Arc<RwLock<EfwDevice>>) {
 
     {
         let mut d = device.write().unwrap();
-        d.update_internal_property("calibration", CALIBRATION_ON);
+        d.update_internal_property("calibration", CALIBRATION_ON).ok();
     }
 
-    libasi::efw::calibrate_wheel(camera_index);
+    let hw = {
+        let d = device.read().unwrap();
+        Arc::clone(&d.hw)
+    };
 
-    while libasi::efw::check_wheel_is_moving(camera_index) {
+    hw.calibrate(camera_index)
+        .unwrap_or_else(|e| log::error!("calibrate failed: {:?}", e));
+
+    while hw.is_moving(camera_index) {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
     {
         let mut d = device.write().unwrap();
-        d.update_internal_property("calibration", CALIBRATION_OFF);
+        d.update_internal_property("calibration", CALIBRATION_OFF).ok();
     }
 }
 
 pub trait BaseAstroDevice {
-    /// Main and only entrypoint to create a new serial device.
-    ///
-    /// A device that doesn't work/cannot communicate with is not really useful
-    /// so this may return `None` if there is something wrong with the just
-    /// discovered device.
     fn new(index: i32) -> Self
     where
         Self: Sized;
 
-    /// Use this method to fetch the real properties from the device,
-    /// this should not be called directly from clients ideally,
-    /// for that goal `get_properties` should be used.
     fn fetch_props(&mut self);
-
-    /// Use this method to return the id of the device as a uuid.
     fn get_id(&self) -> Uuid;
-
-    /// Use this method to return the name of the device (e.g. ZWO533MC).
     fn get_name(&self) -> &String;
-
-    /// Use this method to return the actual cached state stored into `self.properties`.
     fn get_properties(&self) -> &Vec<Property>;
-
-    /// Method to be used when receving requests from clients to update properties.
-    ///
-    /// Ideally this should call internally `update_property_remote` which will be
-    /// responsible to trigger the action against the device to update the property
-    /// on the device itself, if the action is successful the last thing this method
-    /// does would be to update the property inside `self.properties`.
     fn update_property(&mut self, prop_name: &str, val: &str) -> Result<(), DeviceActions>;
-
-    /// Method used internally by the driver itself to change values for properties that
-    /// be manipulated by the user (like the exposure ones)
-    fn update_internal_property(&mut self, prop_name: &str, val: &str)
-        -> Result<(), DeviceActions>;
-
-    /// Use this method to send a command to the device to change the requested property.
-    ///
-    /// Ideally this method will be a big `match` clause where the matching will execute
-    /// `self.send_command` to issue a serial command to the device.
-    fn update_property_remote(&mut self, prop_name: &str, val: &str) -> Result<(), DeviceActions>;
-
-    /// Properties are packed into a vector so to find them we need to
-    /// lookup the index, use this method to do so.
+    fn update_internal_property(
+        &mut self,
+        prop_name: &str,
+        val: &str,
+    ) -> Result<(), DeviceActions>;
+    fn update_property_remote(
+        &mut self,
+        prop_name: &str,
+        val: &str,
+    ) -> Result<(), DeviceActions>;
     fn find_property_index(&self, prop_name: &str) -> Option<usize>;
 }
 
@@ -92,7 +73,7 @@ pub trait AsiEfw {
     fn close(&self);
     fn get_index(&self) -> i32;
     fn init_device_props(&mut self);
-    fn get_info(&self) -> libasi::efw::EFWInfo;
+    fn get_info(&self) -> EFWInfo;
 }
 
 pub struct EfwDevice {
@@ -102,15 +83,19 @@ pub struct EfwDevice {
     index: i32,
     ls_rand_id: [u8; 8],
     slots_num: i32,
+    pub hw: Arc<dyn EfwHardware>,
 }
 
-impl BaseAstroDevice for EfwDevice {
-    fn new(index: i32) -> Self
-    where
-        Self: Sized,
-    {
-        let mut efw_id = 0;
-        libasi::efw::get_efw_id(index, &mut efw_id);
+impl EfwDevice {
+    /// Create a new `EfwDevice` with an injected hardware implementation.
+    /// Use this in tests to pass a mock, or via `BaseAstroDevice::new` for real hardware.
+    pub fn new_with_hw(index: i32, hw: Arc<dyn EfwHardware>) -> Self {
+        let efw_id = hw
+            .get_id(index)
+            .unwrap_or_else(|e| {
+                log::error!("get_id failed: {:?}", e);
+                0
+            });
         let mut device = EfwDevice {
             id: Uuid::new_v4(),
             name: "".to_string(),
@@ -118,20 +103,32 @@ impl BaseAstroDevice for EfwDevice {
             index: efw_id,
             ls_rand_id: [0; 8],
             slots_num: 0,
+            hw,
         };
         device.init_device();
         device.init_device_props();
         device
     }
+}
+
+impl BaseAstroDevice for EfwDevice {
+    fn new(index: i32) -> Self {
+        Self::new_with_hw(index, Arc::new(libasi::efw::RealEfw))
+    }
 
     fn fetch_props(&mut self) {
-        let actual = self.actual_slot();
+        let actual = self
+            .hw
+            .get_position(self.index)
+            .unwrap_or_else(|e| {
+                log::error!("get_position failed: {:?}", e);
+                0
+            });
 
         let prop = self.properties.get_mut(1).unwrap();
-
         if prop.value.parse::<i32>().unwrap() != actual {
             prop.value = actual.to_string();
-        };
+        }
     }
 
     fn get_id(&self) -> Uuid {
@@ -149,18 +146,17 @@ impl BaseAstroDevice for EfwDevice {
     fn update_property(&mut self, prop_name: &str, val: &str) -> Result<(), DeviceActions> {
         if let Some(idx) = self.find_property_index(prop_name) {
             let prop = self.properties.get(idx).unwrap();
-
             match prop.permission {
                 0 => Err(DeviceActions::CannotUpdateReadOnlyProperty),
                 _ => match self.update_property_remote(prop_name, val) {
                     Ok(()) => {
                         let prop = self.properties.get_mut(idx).unwrap();
                         prop.value = val.to_owned();
-                        return Ok(());
+                        Ok(())
                     }
                     Err(e) => {
                         info!("Update property remote failed");
-                        return Err(e);
+                        Err(e)
                     }
                 },
             }
@@ -179,7 +175,7 @@ impl BaseAstroDevice for EfwDevice {
             prop_name, val
         );
         if let Some(prop_idx) = self.find_property_index(prop_name) {
-            let mut prop = self.properties.get_mut(prop_idx).unwrap();
+            let prop = self.properties.get_mut(prop_idx).unwrap();
             prop.value = val.to_string();
             Ok(())
         } else {
@@ -187,16 +183,20 @@ impl BaseAstroDevice for EfwDevice {
         }
     }
 
-    fn update_property_remote(&mut self, prop_name: &str, val: &str) -> Result<(), DeviceActions> {
+    fn update_property_remote(
+        &mut self,
+        prop_name: &str,
+        val: &str,
+    ) -> Result<(), DeviceActions> {
         match prop_name {
             "actual_slot" => {
                 if let Ok(num) = val.parse::<i32>() {
-                    match num {
-                        1..=5 => {
-                            self.set_slot(num);
-                            Ok(())
-                        }
-                        _ => Err(DeviceActions::InvalidValue),
+                    if (1..=self.slots_num).contains(&num) {
+                        self.hw
+                            .set_position(self.index, num)
+                            .map_err(|_| DeviceActions::InvalidValue)
+                    } else {
+                        Err(DeviceActions::InvalidValue)
                     }
                 } else {
                     Err(DeviceActions::InvalidValue)
@@ -204,31 +204,22 @@ impl BaseAstroDevice for EfwDevice {
             }
             "unidirectional" => {
                 if let Ok(flag) = FromStr::from_str(val) {
-                    self.set_unidirection(flag);
-                    Ok(())
+                    self.hw
+                        .set_direction(self.index, flag)
+                        .map_err(|_| DeviceActions::InvalidValue)
                 } else {
                     info!("Parsing failed");
                     Err(DeviceActions::InvalidValue)
                 }
             }
-            _ => Err(DeviceActions::InvalidValue), // Update to InvalidProperty
+            _ => Err(DeviceActions::InvalidValue),
         }
     }
 
     fn find_property_index(&self, prop_name: &str) -> Option<usize> {
-        let mut index = 256;
-
-        for (idx, prop) in self.properties.iter().enumerate() {
-            if prop.name == prop_name {
-                index = idx;
-                break;
-            }
-        }
-        if index == 256 {
-            return None;
-        } else {
-            return Some(index);
-        }
+        self.properties
+            .iter()
+            .position(|prop| prop.name == prop_name)
     }
 }
 
@@ -238,17 +229,20 @@ impl AsiEfw for EfwDevice {
     }
 
     fn init_device(&mut self) {
-        libasi::efw::open_efw(self.index);
+        self.hw
+            .open(self.index)
+            .unwrap_or_else(|e| log::error!("open_efw failed: {:?}", e));
         let efw_info = self.get_info();
         debug!("Prop: {:?}", efw_info);
         let name = asi_rs::utils::asi_name_to_string(&efw_info.Name);
-
         self.name = format!("ZWO {}", name);
         self.slots_num = efw_info.slotNum;
     }
 
     fn close(&self) {
-        libasi::efw::close_efw(self.index);
+        self.hw
+            .close(self.index)
+            .unwrap_or_else(|e| log::error!("close_efw failed: {:?}", e));
     }
 
     fn init_device_props(&mut self) {
@@ -258,15 +252,29 @@ impl AsiEfw for EfwDevice {
             "integer",
         ));
 
+        let actual = self
+            .hw
+            .get_position(self.index)
+            .unwrap_or_else(|e| {
+                log::error!("get_position failed: {:?}", e);
+                1
+            });
         self.properties.push(asi_rs::utils::new_read_write_prop(
             "actual_slot",
-            &self.actual_slot().to_string(),
+            &actual.to_string(),
             "integer",
         ));
 
+        let unid = self
+            .hw
+            .get_direction(self.index)
+            .unwrap_or_else(|e| {
+                log::error!("get_direction failed: {:?}", e);
+                false
+            });
         self.properties.push(asi_rs::utils::new_read_write_prop(
             "unidirectional",
-            &self.is_unidirectional().to_string(),
+            &unid.to_string(),
             "bool",
         ));
 
@@ -277,39 +285,230 @@ impl AsiEfw for EfwDevice {
         ));
     }
 
-    fn get_info(&self) -> libasi::efw::EFWInfo {
-        let mut efw_info = libasi::efw::EFWInfo::new();
-        libasi::efw::get_efw_property(self.index, &mut efw_info);
-        efw_info
+    fn get_info(&self) -> EFWInfo {
+        self.hw
+            .get_property(self.index)
+            .unwrap_or_else(|e| {
+                log::error!("get_efw_property failed: {:?}", e);
+                EFWInfo::new()
+            })
     }
 }
 
-impl FilterWheel for EfwDevice {
-    fn actual_slot(&self) -> i32 {
-        libasi::efw::get_efw_position(self.index)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use libasi::efw::{EFWInfo, EfwError, EfwHardware};
+    use lightspeed_astro::devices::actions::DeviceActions;
+    use std::sync::{Arc, Mutex};
+
+    // -----------------------------------------------------------------------
+    // Mock EFW hardware
+    // -----------------------------------------------------------------------
+
+    struct MockEfw {
+        position: Mutex<i32>,
+        unidirectional: Mutex<bool>,
+        slots: i32,
     }
 
-    fn set_slot(&self, position: i32) {
-        debug!("Setting position {}", position);
-        libasi::efw::set_efw_position(self.index, position);
+    impl MockEfw {
+        fn new(slots: i32) -> Self {
+            MockEfw {
+                position: Mutex::new(1),
+                unidirectional: Mutex::new(false),
+                slots,
+            }
+        }
     }
 
-    fn set_unidirection(&self, flag: bool) {
-        debug!("Setting unidirectional state to {}", flag);
-        if self.is_unidirectional() {
-            libasi::efw::set_unidirection(self.index, flag);
-        };
+    impl EfwHardware for MockEfw {
+        fn get_num_of_connected_devices(&self) -> i32 {
+            1
+        }
+        fn get_id(&self, _index: i32) -> Result<i32, EfwError> {
+            Ok(0)
+        }
+        fn open(&self, _id: i32) -> Result<(), EfwError> {
+            Ok(())
+        }
+        fn close(&self, _id: i32) -> Result<(), EfwError> {
+            Ok(())
+        }
+        fn get_property(&self, _id: i32) -> Result<EFWInfo, EfwError> {
+            let mut info = EFWInfo::new();
+            let name = b"EFW8";
+            for (i, b) in name.iter().enumerate() {
+                info.Name[i] = *b as i8;
+            }
+            info.slotNum = self.slots;
+            Ok(info)
+        }
+        fn get_position(&self, _id: i32) -> Result<i32, EfwError> {
+            Ok(*self.position.lock().unwrap())
+        }
+        fn set_position(&self, _id: i32, position: i32) -> Result<(), EfwError> {
+            *self.position.lock().unwrap() = position;
+            Ok(())
+        }
+        fn set_direction(&self, _id: i32, flag: bool) -> Result<(), EfwError> {
+            *self.unidirectional.lock().unwrap() = flag;
+            Ok(())
+        }
+        fn get_direction(&self, _id: i32) -> Result<bool, EfwError> {
+            Ok(*self.unidirectional.lock().unwrap())
+        }
+        fn calibrate(&self, _id: i32) -> Result<(), EfwError> {
+            Ok(())
+        }
+        fn is_moving(&self, _id: i32) -> bool {
+            false
+        }
     }
 
-    fn is_unidirectional(&self) -> bool {
-        debug!("Checking unidirectional state");
-        libasi::efw::is_unidirectional(self.index)
+    fn make_device(slots: i32) -> EfwDevice {
+        EfwDevice::new_with_hw(0, Arc::new(MockEfw::new(slots)))
     }
-}
 
-trait FilterWheel {
-    fn actual_slot(&self) -> i32;
-    fn set_slot(&self, slot: i32);
-    fn set_unidirection(&self, flag: bool);
-    fn is_unidirectional(&self) -> bool;
+    // -----------------------------------------------------------------------
+    // find_property_index tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_find_property_index_first_prop() {
+        let device = make_device(5);
+        assert_eq!(device.find_property_index("available_slots"), Some(0));
+    }
+
+    #[test]
+    fn test_find_property_index_middle_prop() {
+        let device = make_device(5);
+        assert_eq!(device.find_property_index("actual_slot"), Some(1));
+    }
+
+    #[test]
+    fn test_find_property_index_last_prop() {
+        let device = make_device(5);
+        assert_eq!(device.find_property_index("calibration"), Some(3));
+    }
+
+    #[test]
+    fn test_find_property_index_not_found() {
+        let device = make_device(5);
+        assert_eq!(device.find_property_index("nonexistent"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // update_property permission tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_update_readonly_property_fails() {
+        let mut device = make_device(5);
+        let result = device.update_property("available_slots", "10");
+        assert_eq!(result, Err(DeviceActions::CannotUpdateReadOnlyProperty));
+    }
+
+    #[test]
+    fn test_update_unknown_property_fails() {
+        let mut device = make_device(5);
+        let result = device.update_property("no_such_prop", "1");
+        assert_eq!(result, Err(DeviceActions::UnknownProperty));
+    }
+
+    // -----------------------------------------------------------------------
+    // update_property_remote routing tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_set_valid_slot_succeeds() {
+        let mut device = make_device(5);
+        assert!(device.update_property("actual_slot", "3").is_ok());
+        // Verify the hw mock received the position
+        let pos = device.hw.get_position(0).unwrap();
+        assert_eq!(pos, 3);
+    }
+
+    #[test]
+    fn test_set_slot_out_of_range_fails() {
+        let mut device = make_device(5);
+        // Slot 6 exceeds slots_num of 5
+        assert_eq!(
+            device.update_property("actual_slot", "6"),
+            Err(DeviceActions::InvalidValue)
+        );
+        // Slot 0 is below the valid range
+        assert_eq!(
+            device.update_property("actual_slot", "0"),
+            Err(DeviceActions::InvalidValue)
+        );
+    }
+
+    #[test]
+    fn test_set_slot_respects_actual_slot_count() {
+        // A wheel with only 3 slots should reject slot 4
+        let mut device = make_device(3);
+        assert!(device.update_property("actual_slot", "3").is_ok());
+        assert_eq!(
+            device.update_property("actual_slot", "4"),
+            Err(DeviceActions::InvalidValue)
+        );
+    }
+
+    #[test]
+    fn test_set_slot_non_numeric_fails() {
+        let mut device = make_device(5);
+        assert_eq!(
+            device.update_property("actual_slot", "abc"),
+            Err(DeviceActions::InvalidValue)
+        );
+    }
+
+    #[test]
+    fn test_set_unidirectional_true() {
+        let mut device = make_device(5);
+        assert!(device.update_property("unidirectional", "true").is_ok());
+        assert!(device.hw.get_direction(0).unwrap());
+    }
+
+    #[test]
+    fn test_set_unidirectional_false() {
+        let mut device = make_device(5);
+        // First set to true, then back to false
+        device.update_property("unidirectional", "true").unwrap();
+        assert!(device.update_property("unidirectional", "false").is_ok());
+        assert!(!device.hw.get_direction(0).unwrap());
+    }
+
+    #[test]
+    fn test_set_unidirectional_invalid_value_fails() {
+        let mut device = make_device(5);
+        assert_eq!(
+            device.update_property("unidirectional", "yes"),
+            Err(DeviceActions::InvalidValue)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // update_internal_property tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_update_internal_property_calibration() {
+        let mut device = make_device(5);
+        assert!(device
+            .update_internal_property("calibration", "on")
+            .is_ok());
+        let idx = device.find_property_index("calibration").unwrap();
+        assert_eq!(device.properties[idx].value, "on");
+    }
+
+    #[test]
+    fn test_update_internal_property_unknown_fails() {
+        let mut device = make_device(5);
+        assert_eq!(
+            device.update_internal_property("no_such_prop", "val"),
+            Err(DeviceActions::UnknownProperty)
+        );
+    }
 }

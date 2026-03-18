@@ -1,11 +1,10 @@
 pub use libasi_sys::camera::*;
-use log::error;
 
 pub type AsiCameraInfo = _ASI_CAMERA_INFO;
 pub type AsiControlCaps = _ASI_CONTROL_CAPS;
 pub type AsiID = _ASI_ID;
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ROIFormat {
     pub width: i32,
     pub height: i32,
@@ -13,172 +12,291 @@ pub struct ROIFormat {
     pub img_type: i32,
 }
 
-fn check_error_code(code: i32) {
-    match code {
-        // Success
-        0 => (),
-        // No camera connected or index value out of boundary
-        1 => error!("ASI_ERROR_INVALID_INDEX"),
-        2 => error!("ASI_ERROR_INVALID_ID"),
-        3 => error!("ASI_ERROR_INVALID_CONTROL_TYPE"),
-        // Camera didn't open
-        4 => error!("ASI_ERROR_CAMERA_CLOSED"),
-        // Failed to find the camera, maybe the camera has been removed
-        5 => error!("ASI_ERROR_CAMERA_REMOVED"),
-        // Cannot find the path of the file
-        6 => error!("ASI_ERROR_INVALID_PATH"),
-        7 => error!("ASI_ERROR_INVALID_FILEFORMAT"),
-        // Wrong video format size
-        8 => error!("ASI_ERROR_INVALID_SIZE"),
-        9 => error!("ASI_ERROR_INVALID_IMGTYPE"), //unsupported image formate
-        10 => error!("ASI_ERROR_OUTOF_BOUNDARY"), //the startpos is out of boundary
-        // Communication timeout
-        11 => error!("ASI_ERROR_TIMEOUT"),
-        12 => error!("ASI_ERROR_INVALID_SEQUENCE"), //stop capture first!
-        13 => error!("ASI_ERROR_BUFFER_TOO_SMALL"), //buffer size is not big enough
-        14 => error!("ASI_ERROR_VIDEO_MODE_ACTIVE"),
-        15 => error!("ASI_ERROR_EXPOSURE_IN_PROGRESS"),
-        16 => error!("ASI_ERROR_GENERAL_ERROR"), //general error, eg: value is out of valid range
-        17 => error!("ASI_ERROR_INVALID_MODE"),  //the current mode is wrong
-        18 => error!("ASI_ERROR_END"),
-        e => error!("unknown error {}", e),
+/// All error codes returned by the ASI camera SDK.
+#[derive(Debug, PartialEq)]
+pub enum AsiError {
+    InvalidIndex,
+    InvalidId,
+    InvalidControlType,
+    CameraClosed,
+    CameraRemoved,
+    InvalidPath,
+    InvalidFileFormat,
+    InvalidSize,
+    InvalidImgType,
+    OutOfBoundary,
+    Timeout,
+    InvalidSequence,
+    BufferTooSmall,
+    VideoModeActive,
+    ExposureInProgress,
+    GeneralError,
+    InvalidMode,
+    End,
+    Unknown(i32),
+}
+
+impl std::fmt::Display for AsiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
     }
 }
 
-pub fn start_exposure(camera_id: i32) {
-    check_error_code(unsafe { libasi_sys::camera::ASIStartExposure(camera_id, 0) });
+pub(crate) fn map_error_code(code: i32) -> Result<(), AsiError> {
+    match code {
+        0 => Ok(()),
+        1 => Err(AsiError::InvalidIndex),
+        2 => Err(AsiError::InvalidId),
+        3 => Err(AsiError::InvalidControlType),
+        4 => Err(AsiError::CameraClosed),
+        5 => Err(AsiError::CameraRemoved),
+        6 => Err(AsiError::InvalidPath),
+        7 => Err(AsiError::InvalidFileFormat),
+        8 => Err(AsiError::InvalidSize),
+        9 => Err(AsiError::InvalidImgType),
+        10 => Err(AsiError::OutOfBoundary),
+        11 => Err(AsiError::Timeout),
+        12 => Err(AsiError::InvalidSequence),
+        13 => Err(AsiError::BufferTooSmall),
+        14 => Err(AsiError::VideoModeActive),
+        15 => Err(AsiError::ExposureInProgress),
+        16 => Err(AsiError::GeneralError),
+        17 => Err(AsiError::InvalidMode),
+        18 => Err(AsiError::End),
+        e => Err(AsiError::Unknown(e)),
+    }
 }
 
-pub fn stop_exposure(camera_id: i32) {
-    check_error_code(unsafe { libasi_sys::camera::ASIStopExposure(camera_id) });
+/// Abstraction over the ASI camera hardware. Implement this trait to inject a
+/// mock for unit testing without physical hardware.
+pub trait CameraHardware: Send + Sync {
+    fn get_num_of_connected_cameras(&self) -> i32;
+    fn get_camera_info(&self, info: &mut AsiCameraInfo, index: i32) -> Result<(), AsiError>;
+    fn open_camera(&self, index: i32) -> Result<(), AsiError>;
+    fn init_camera(&self, index: i32) -> Result<(), AsiError>;
+    fn close_camera(&self, index: i32) -> Result<(), AsiError>;
+    fn get_num_of_controls(&self, index: i32) -> Result<i32, AsiError>;
+    fn get_control_caps(
+        &self,
+        camera_id: i32,
+        cap_index: i32,
+        caps: &mut AsiControlCaps,
+    ) -> Result<(), AsiError>;
+    fn get_control_value(
+        &self,
+        camera_index: i32,
+        control_type: i32,
+    ) -> Result<i64, AsiError>;
+    fn set_control_value(
+        &self,
+        camera_index: i32,
+        control_type: i32,
+        value: i64,
+        is_auto_set: i32,
+    ) -> Result<(), AsiError>;
+    fn get_roi_format(&self, camera_id: i32) -> Result<ROIFormat, AsiError>;
+    fn set_roi_format(&self, camera_id: i32, roi: ROIFormat) -> Result<(), AsiError>;
+    fn get_cam_id(&self, camera_id: i32) -> Result<AsiID, AsiError>;
+    fn set_cam_id(&self, camera_id: i32, asi_id: AsiID) -> Result<(), AsiError>;
+    fn start_exposure(&self, camera_id: i32) -> Result<(), AsiError>;
+    fn stop_exposure(&self, camera_id: i32) -> Result<(), AsiError>;
+    fn exposure_status(&self, camera_id: i32) -> Result<u32, AsiError>;
+    fn download_exposure(&self, camera_id: i32, buffer: &mut [u8]) -> Result<(), AsiError>;
+    fn get_start_position(&self, cam_idx: i32) -> Result<(i32, i32), AsiError>;
+    fn get_camera_mode(&self, cam_idx: i32) -> Result<i32, AsiError>;
 }
 
-#[cfg(windows)]
-pub fn exposure_status(camera_id: i32, status: *mut i32) {
-    check_error_code(unsafe { libasi_sys::camera::ASIGetExpStatus(camera_id, status) });
+/// Real hardware implementation that delegates to the ZWO ASI SDK via FFI.
+pub struct RealCamera;
+
+impl CameraHardware for RealCamera {
+    fn get_num_of_connected_cameras(&self) -> i32 {
+        unsafe { libasi_sys::camera::ASIGetNumOfConnectedCameras() }
+    }
+
+    fn get_camera_info(&self, info: &mut AsiCameraInfo, index: i32) -> Result<(), AsiError> {
+        map_error_code(unsafe { libasi_sys::camera::ASIGetCameraProperty(info, index) })
+    }
+
+    fn open_camera(&self, index: i32) -> Result<(), AsiError> {
+        map_error_code(unsafe { libasi_sys::camera::ASIOpenCamera(index) })
+    }
+
+    fn init_camera(&self, index: i32) -> Result<(), AsiError> {
+        map_error_code(unsafe { libasi_sys::camera::ASIInitCamera(index) })
+    }
+
+    fn close_camera(&self, index: i32) -> Result<(), AsiError> {
+        map_error_code(unsafe { libasi_sys::camera::ASICloseCamera(index) })
+    }
+
+    fn get_num_of_controls(&self, index: i32) -> Result<i32, AsiError> {
+        let mut noc = 0i32;
+        map_error_code(unsafe { libasi_sys::camera::ASIGetNumOfControls(index, &mut noc) })?;
+        Ok(noc)
+    }
+
+    fn get_control_caps(
+        &self,
+        camera_id: i32,
+        cap_index: i32,
+        caps: &mut AsiControlCaps,
+    ) -> Result<(), AsiError> {
+        map_error_code(unsafe {
+            libasi_sys::camera::ASIGetControlCaps(camera_id, cap_index, caps)
+        })
+    }
+
+    fn get_control_value(
+        &self,
+        camera_index: i32,
+        control_type: i32,
+    ) -> Result<i64, AsiError> {
+        let mut value: i64 = 0;
+        let mut is_auto_set: i32 = 0;
+        map_error_code(unsafe {
+            libasi_sys::camera::ASIGetControlValue(
+                camera_index,
+                control_type,
+                &mut value,
+                &mut is_auto_set,
+            )
+        })?;
+        Ok(value)
+    }
+
+    fn set_control_value(
+        &self,
+        camera_index: i32,
+        control_type: i32,
+        value: i64,
+        is_auto_set: i32,
+    ) -> Result<(), AsiError> {
+        map_error_code(unsafe {
+            libasi_sys::camera::ASISetControlValue(camera_index, control_type, value, is_auto_set)
+        })
+    }
+
+    fn get_roi_format(&self, camera_id: i32) -> Result<ROIFormat, AsiError> {
+        let mut width = 0i32;
+        let mut height = 0i32;
+        let mut bin = 0i32;
+        let mut img_type = 0i32;
+        map_error_code(unsafe {
+            libasi_sys::camera::ASIGetROIFormat(
+                camera_id,
+                &mut width,
+                &mut height,
+                &mut bin,
+                &mut img_type,
+            )
+        })?;
+        Ok(ROIFormat {
+            width,
+            height,
+            bin,
+            img_type,
+        })
+    }
+
+    fn set_roi_format(&self, camera_id: i32, roi: ROIFormat) -> Result<(), AsiError> {
+        map_error_code(unsafe {
+            libasi_sys::camera::ASISetROIFormat(
+                camera_id, roi.width, roi.height, roi.bin, roi.img_type,
+            )
+        })
+    }
+
+    fn get_cam_id(&self, camera_id: i32) -> Result<AsiID, AsiError> {
+        let mut id = AsiID::new();
+        map_error_code(unsafe { libasi_sys::camera::ASIGetID(camera_id, &mut id) })?;
+        Ok(id)
+    }
+
+    fn set_cam_id(&self, camera_id: i32, asi_id: AsiID) -> Result<(), AsiError> {
+        map_error_code(unsafe { libasi_sys::camera::ASISetID(camera_id, asi_id) })
+    }
+
+    fn start_exposure(&self, camera_id: i32) -> Result<(), AsiError> {
+        map_error_code(unsafe { libasi_sys::camera::ASIStartExposure(camera_id, 0) })
+    }
+
+    fn stop_exposure(&self, camera_id: i32) -> Result<(), AsiError> {
+        map_error_code(unsafe { libasi_sys::camera::ASIStopExposure(camera_id) })
+    }
+
+    fn exposure_status(&self, camera_id: i32) -> Result<u32, AsiError> {
+        let mut status: u32 = 0;
+        map_error_code(unsafe {
+            libasi_sys::camera::ASIGetExpStatus(camera_id, &mut status)
+        })?;
+        Ok(status)
+    }
+
+    fn download_exposure(&self, camera_id: i32, buffer: &mut [u8]) -> Result<(), AsiError> {
+        map_error_code(unsafe {
+            libasi_sys::camera::ASIGetDataAfterExp(
+                camera_id,
+                buffer.as_mut_ptr(),
+                buffer.len() as i64,
+            )
+        })
+    }
+
+    fn get_start_position(&self, cam_idx: i32) -> Result<(i32, i32), AsiError> {
+        let mut start_x = 0i32;
+        let mut start_y = 0i32;
+        map_error_code(unsafe {
+            libasi_sys::camera::ASIGetStartPos(cam_idx, &mut start_x, &mut start_y)
+        })?;
+        Ok((start_x, start_y))
+    }
+
+    fn get_camera_mode(&self, cam_idx: i32) -> Result<i32, AsiError> {
+        let mut mode = 0i32;
+        map_error_code(unsafe { libasi_sys::camera::ASIGetCameraMode(cam_idx, &mut mode) })?;
+        Ok(mode)
+    }
 }
 
-#[cfg(unix)]
-pub fn exposure_status(camera_id: i32, status: *mut u32) {
-    check_error_code(unsafe { libasi_sys::camera::ASIGetExpStatus(camera_id, status) });
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[cfg(windows)]
-pub fn download_exposure(camera_id: i32, buffer: *mut u8, buf_size: i32) {
-    check_error_code(unsafe { libasi_sys::camera::ASIGetDataAfterExp(camera_id, buffer, buf_size) });
-}
+    #[test]
+    fn test_map_error_code_success() {
+        assert_eq!(map_error_code(0), Ok(()));
+    }
 
-#[cfg(unix)]
-pub fn download_exposure(camera_id: i32, buffer: *mut u8, buf_size: i64) {
-    check_error_code(unsafe { libasi_sys::camera::ASIGetDataAfterExp(camera_id, buffer, buf_size) });
-}
+    #[test]
+    fn test_map_error_code_all_known_variants() {
+        assert_eq!(map_error_code(1), Err(AsiError::InvalidIndex));
+        assert_eq!(map_error_code(2), Err(AsiError::InvalidId));
+        assert_eq!(map_error_code(3), Err(AsiError::InvalidControlType));
+        assert_eq!(map_error_code(4), Err(AsiError::CameraClosed));
+        assert_eq!(map_error_code(5), Err(AsiError::CameraRemoved));
+        assert_eq!(map_error_code(6), Err(AsiError::InvalidPath));
+        assert_eq!(map_error_code(7), Err(AsiError::InvalidFileFormat));
+        assert_eq!(map_error_code(8), Err(AsiError::InvalidSize));
+        assert_eq!(map_error_code(9), Err(AsiError::InvalidImgType));
+        assert_eq!(map_error_code(10), Err(AsiError::OutOfBoundary));
+        assert_eq!(map_error_code(11), Err(AsiError::Timeout));
+        assert_eq!(map_error_code(12), Err(AsiError::InvalidSequence));
+        assert_eq!(map_error_code(13), Err(AsiError::BufferTooSmall));
+        assert_eq!(map_error_code(14), Err(AsiError::VideoModeActive));
+        assert_eq!(map_error_code(15), Err(AsiError::ExposureInProgress));
+        assert_eq!(map_error_code(16), Err(AsiError::GeneralError));
+        assert_eq!(map_error_code(17), Err(AsiError::InvalidMode));
+        assert_eq!(map_error_code(18), Err(AsiError::End));
+    }
 
-pub fn get_num_of_connected_cameras() -> i32 {
-    unsafe { libasi_sys::camera::ASIGetNumOfConnectedCameras() }
-}
+    #[test]
+    fn test_map_error_code_unknown_positive() {
+        assert_eq!(map_error_code(99), Err(AsiError::Unknown(99)));
+    }
 
-pub fn get_cam_id(camera_id: i32, asi_id: *mut AsiID) {
-    check_error_code(unsafe { libasi_sys::camera::ASIGetID(camera_id, asi_id) });
-}
-
-pub fn set_cam_id(camera_id: i32, asi_id: AsiID) {
-    check_error_code(unsafe { libasi_sys::camera::ASISetID(camera_id, asi_id) });
-}
-
-pub fn open_camera(camera_index: i32) {
-    check_error_code(unsafe { libasi_sys::camera::ASIOpenCamera(camera_index) });
-}
-
-pub fn init_camera(camera_index: i32) {
-    check_error_code(unsafe { libasi_sys::camera::ASIInitCamera(camera_index) });
-}
-
-pub fn close_camera(camera_index: i32) {
-    check_error_code(unsafe { libasi_sys::camera::ASICloseCamera(camera_index) });
-}
-
-pub fn get_control_caps(camera_id: i32, index: i32, noc: *mut AsiControlCaps) {
-    check_error_code(unsafe { libasi_sys::camera::ASIGetControlCaps(camera_id, index, noc) });
-}
-
-pub fn get_num_of_controls(camera_index: i32, noc: *mut i32) {
-    check_error_code(unsafe { libasi_sys::camera::ASIGetNumOfControls(camera_index, noc) });
-}
-
-pub fn get_camera_info(asi_info: *mut AsiCameraInfo, camera_index: i32) {
-    check_error_code(unsafe { libasi_sys::camera::ASIGetCameraProperty(asi_info, camera_index) });
-}
-
-#[cfg(windows)]
-pub fn get_control_value(
-    camera_index: i32,
-    control_type: i32,
-    value: &mut i32,
-    is_auto_set: &mut i32,
-) {
-    check_error_code(unsafe {
-        libasi_sys::camera::ASIGetControlValue(camera_index, control_type, value, is_auto_set)
-    });
-}
-
-#[cfg(unix)]
-pub fn get_control_value(
-    camera_index: i32,
-    control_type: i32,
-    value: &mut i64,
-    is_auto_set: &mut i32,
-) {
-    check_error_code(unsafe {
-        libasi_sys::camera::ASIGetControlValue(camera_index, control_type, value, is_auto_set)
-    });
-}
-
-#[cfg(windows)]
-pub fn set_control_value(camera_index: i32, control_type: i32, value: i32, is_auto_set: i32) {
-    check_error_code(unsafe {
-        libasi_sys::camera::ASISetControlValue(camera_index, control_type, value, is_auto_set)
-    });
-}
-
-#[cfg(unix)]
-pub fn set_control_value(camera_index: i32, control_type: i32, value: ::std::os::raw::c_long, is_auto_set: i32) {
-    check_error_code(unsafe {
-        libasi_sys::camera::ASISetControlValue(camera_index, control_type, value, is_auto_set)
-    });
-}
-
-pub fn get_roi_format(
-    camera_id: i32,
-    width: &mut i32,
-    height: &mut i32,
-    bin: &mut i32,
-    img_type: &mut i32,
-) {
-    check_error_code(unsafe {
-        libasi_sys::camera::ASIGetROIFormat(camera_id, width, height, bin, img_type)
-    });
-}
-
-pub fn set_roi_format(
-    camera_id: i32,
-    width: i32,
-    height: i32,
-    bin: i32,
-    img_type: i32,
-) {
-    check_error_code(unsafe {
-        libasi_sys::camera::ASISetROIFormat(camera_id, width, height, bin, img_type)
-    });
-}
-
-pub fn get_start_position(cam_idx: i32, start_x: &mut i32, start_y: &mut i32) {
-    check_error_code(unsafe {
-        libasi_sys::camera::ASIGetStartPos(cam_idx, start_x, start_y)
-    });
-}
-
-pub fn get_camera_mode(cam_idx: i32, camera_mode: &mut i32) {
-    check_error_code(unsafe {
-        libasi_sys::camera::ASIGetCameraMode(cam_idx, camera_mode)
-    });
+    #[test]
+    fn test_map_error_code_unknown_negative() {
+        assert_eq!(map_error_code(-5), Err(AsiError::Unknown(-5)));
+    }
 }

@@ -1,5 +1,6 @@
 pub mod efw;
 use efw::EfwDevice;
+use libasi::efw::RealEfw;
 use env_logger::Env;
 use lightspeed_astro::devices::actions::DeviceActions;
 use lightspeed_astro::devices::AstroDevice;
@@ -24,7 +25,8 @@ struct AsiEfwDriver {
 
 impl AsiEfwDriver {
     fn new() -> Self {
-        let found = efw::look_for_devices();
+        let hw = Arc::new(RealEfw);
+        let found = efw::look_for_devices(hw.as_ref());
         let mut devices: Vec<Arc<RwLock<EfwDevice>>> = Vec::with_capacity(found as usize);
         for dev in 0..found {
             debug!("Trying to create a new ASI EFW device for index {}", dev);
