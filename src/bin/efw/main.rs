@@ -1,21 +1,18 @@
-pub mod efw;
-use efw::EfwDevice;
-use env_logger::Env;
-use lightspeed_astro::devices::actions::DeviceActions;
-use lightspeed_astro::devices::AstroDevice;
-use lightspeed_astro::request::SetPropertyRequest;
-use lightspeed_astro::request::{EfwCalibrationRequest, GetDevicesRequest};
-use lightspeed_astro::response::SetPropertyResponse;
-use lightspeed_astro::response::{EfwCalibrationResponse, GetDevicesResponse};
-use lightspeed_astro::service::astro_efw_service_server::AstroEfwService;
-use lightspeed_astro::service::astro_efw_service_server::AstroEfwServiceServer;
-use log::{debug, error, info};
-use tonic::{transport::Server, Request, Response, Status};
-
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use crate::efw::{AsiEfw, BaseAstroDevice};
+use env_logger::Env;
+use log::{debug, info};
+use rumqttc::{AsyncClient, MqttOptions, QoS};
+use tokio::signal;
+use tokio::task;
+use uuid::Uuid;
+
+use rumqttc::Event::{Incoming, Outgoing};
+use rumqttc::Packet::Publish;
+
+pub mod efw;
+use efw::EfwDevice;
 
 #[derive(Default, Clone)]
 struct AsiEfwDriver {
@@ -25,174 +22,138 @@ struct AsiEfwDriver {
 impl AsiEfwDriver {
     fn new() -> Self {
         let found = efw::look_for_devices();
-        let mut devices: Vec<Arc<RwLock<EfwDevice>>> = Vec::with_capacity(found as usize);
-        for dev in 0..found {
-            debug!("Trying to create a new ASI EFW device for index {}", dev);
-            let device = Arc::new(RwLock::new(EfwDevice::new(dev)));
-            devices.push(device)
+        let mut devices = Vec::with_capacity(found as usize);
+        for idx in 0..found {
+            let device = Arc::new(RwLock::new(EfwDevice::new(idx)));
+            devices.push(device);
         }
         Self { devices }
     }
 }
 
-#[tonic::async_trait]
-impl AstroEfwService for AsiEfwDriver {
-    async fn get_devices(
-        &self,
-        request: Request<GetDevicesRequest>,
-    ) -> Result<Response<GetDevicesResponse>, Status> {
-        debug!(
-            "Got a request to query devices from {:?}",
-            request.remote_addr()
-        );
-
-        if self.devices.is_empty() {
-            let reply = GetDevicesResponse { devices: vec![] };
-            Ok(Response::new(reply))
-        } else {
-            let mut devices = Vec::new();
-            for dev in self.devices.iter() {
-                let device = dev.read().unwrap();
-                let d = AstroDevice {
-                    id: device.get_id().to_string(),
-                    name: device.get_name().to_owned(),
-                    family: 3,
-                    properties: device.properties.to_owned(),
-                };
-                devices.push(d);
-            }
-            let reply = GetDevicesResponse { devices };
-            Ok(Response::new(reply))
-        }
-    }
-
-    async fn calibrate(
-        &self,
-        request: Request<EfwCalibrationRequest>,
-    ) -> Result<Response<EfwCalibrationResponse>, Status> {
-        let message = request.get_ref();
-        let dev_id = message.id.clone();
-        let devices: Vec<Arc<RwLock<EfwDevice>>> = self.devices.clone();
-
-        for d in devices.iter() {
-            {
-                let device = d.read().unwrap();
-                let index = device.get_index().clone();
-                let d2 = Arc::clone(d);
-
-                if device.get_id().to_string() == dev_id {
-                    info!("Dispatching calibration task in a new thread...");
-                    tokio::task::spawn_blocking(move || {
-                        efw::calibrate(index, d2);
-                        info!("Task ended");
-                    });
-                }
-            }
-        }
-
-        let reply = EfwCalibrationResponse {
-            status: String::from("OK"),
-        };
-        Ok(Response::new(reply))
-    }
-
-    async fn set_property(
-        &self,
-        request: Request<SetPropertyRequest>,
-    ) -> Result<Response<SetPropertyResponse>, Status> {
-        info!(
-            "Got a request to set a property from {:?}",
-            request.remote_addr()
-        );
-        let message = request.get_ref();
-        debug!("device_id: {:?}", message.device_id);
-
-        if message.device_id == "" || message.property_name == "" || message.property_value == "" {
-            return Ok(Response::new(SetPropertyResponse {
-                status: DeviceActions::InvalidValue as i32,
-            }));
-        };
-
-        // TODO: return case if no devices match
-        for d in self.devices.iter() {
-            let mut device = d.write().unwrap();
-            if device.get_id().to_string() == message.device_id {
-                info!(
-                    "Updating property {} for {} to {}",
-                    message.property_name, message.device_id, message.property_value,
-                );
-
-                if let Err(e) =
-                    device.update_property(&message.property_name, &message.property_value)
-                {
-                    info!(
-                        "Updating property {} for {} failed with reason: {:?}",
-                        message.property_name, message.device_id, e
-                    );
-                    return Ok(Response::new(SetPropertyResponse { status: e as i32 }));
-                }
-            }
-        }
-
-        let reply = SetPropertyResponse {
-            status: DeviceActions::Ok as i32,
-        };
-        Ok(Response::new(reply))
+async fn subscribe(client: AsyncClient, ids: &Vec<Uuid>) {
+    for id in ids {
+        client
+            .subscribe(format!("devices/{}/set_slot", id), QoS::AtLeastOnce)
+            .await
+            .unwrap();
+        client
+            .subscribe(format!("devices/{}/calibrate", id), QoS::AtLeastOnce)
+            .await
+            .unwrap();
+        client
+            .subscribe(format!("devices/{}/update", id), QoS::AtLeastOnce)
+            .await
+            .unwrap();
     }
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Default to log level INFO if LS_LOG_LEVEL is not set as
-    // an env var
+async fn main() {
+    console_subscriber::init();
     let env = Env::default().filter_or("LS_LOG_LEVEL", "info");
     env_logger::init_from_env(env);
 
-    // Reflection service
-    let reflection_service = tonic_reflection::server::Builder::configure()
-        .register_encoded_file_descriptor_set(lightspeed_astro::proto::FD_DESCRIPTOR_SET)
-        .build()
-        .unwrap();
-
-    let host = "127.0.0.1";
-    let addr = astrotools::utils::build_server_address(host);
     let driver = AsiEfwDriver::new();
+    let mut mqttoptions = MqttOptions::new("asi_efw", "127.0.0.1", 1883);
+    mqttoptions.set_keep_alive(Duration::from_secs(5));
+    let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
 
-    let mut devices_for_fetching = Vec::new();
-    let mut devices_for_closing = Vec::new();
+    let mut devices_id = Vec::with_capacity(driver.devices.len());
     for d in &driver.devices {
-        devices_for_fetching.push(Arc::clone(d));
-        devices_for_closing.push(Arc::clone(d));
+        devices_id.push(d.read().unwrap().id);
     }
 
-    for d in &devices_for_fetching {
+    subscribe(client.clone(), &devices_id).await;
+
+    // Spawn a ctrl-c handler per device to close cleanly on shutdown
+    for d in &driver.devices {
         let device = Arc::clone(d);
         tokio::spawn(async move {
+            signal::ctrl_c().await.unwrap();
+            debug!("ctrl-c received, closing EFW device");
+            device.read().unwrap().close();
+            std::process::exit(0);
+        });
+    }
+
+    // Periodic state fetch and publish per device
+    for d in &driver.devices {
+        let device = Arc::clone(d);
+        let c = client.clone();
+        task::spawn(async move {
+            let d_id = device.read().unwrap().id;
             loop {
-                tokio::time::sleep(Duration::from_secs(1)).await;
                 device.write().unwrap().fetch_props();
+                let serialized = serde_json::to_string(&*device.read().unwrap()).unwrap();
+                c.publish(
+                    format!("devices/{}", &d_id),
+                    QoS::AtLeastOnce,
+                    false,
+                    serialized,
+                )
+                .await
+                .unwrap();
+                tokio::time::sleep(Duration::from_millis(2500)).await;
             }
         });
     }
 
-    info!("ZWOEFWDriver process listening on {}", addr);
+    // MQTT event loop
+    // Topics are in the form devices/{UUID}/{action}
+    // "devices/" = 8 chars, UUID = 36 chars, "/" = 1 char → action starts at index 45
+    while let Ok(event) = eventloop.poll().await {
+        debug!("Received = {:?}", event);
+        match event {
+            Incoming(inc) => match inc {
+                Publish(data) => {
+                    let action = &data.topic[45..];
+                    let device_id = &data.topic[8..44];
 
-    Server::builder()
-        .add_service(reflection_service)
-        .add_service(AstroEfwServiceServer::new(driver))
-        .serve_with_shutdown(addr, async move {
-            match tokio::signal::ctrl_c().await {
-                Ok(_) => {
-                    debug!("shutting down requested, closing devices before quitting...");
-                    for d in devices_for_closing.iter_mut() {
-                        let device = d.write().unwrap();
-                        device.close();
+                    match action {
+                        "set_slot" => {
+                            let payload = String::from_utf8_lossy(&data.payload);
+                            if let Ok(slot) = payload.trim().parse::<i32>() {
+                                for d in &driver.devices {
+                                    if d.read().unwrap().id.to_string() == device_id {
+                                        info!("Setting slot {} for {}", slot, device_id);
+                                        d.read().unwrap().set_slot(slot);
+                                    }
+                                }
+                            }
+                        }
+                        "calibrate" => {
+                            for d in &driver.devices {
+                                if d.read().unwrap().id.to_string() == device_id {
+                                    info!("Starting calibration for {}", device_id);
+                                    let device = Arc::clone(d);
+                                    task::spawn_blocking(move || {
+                                        let efw_id = device.read().unwrap().efw_id();
+                                        device.write().unwrap().calibrating = true;
+                                        libasi::efw::calibrate_wheel(efw_id);
+                                        while libasi::efw::check_wheel_is_moving(efw_id) {
+                                            std::thread::sleep(Duration::from_millis(100));
+                                        }
+                                        device.write().unwrap().calibrating = false;
+                                        info!("Calibration complete");
+                                    });
+                                }
+                            }
+                        }
+                        "update" => {
+                            let payload = String::from_utf8_lossy(&data.payload);
+                            info!(
+                                "Update request for {}: {}",
+                                device_id, payload
+                            );
+                            // TODO: parse and dispatch generic property updates
+                        }
+                        _ => (),
                     }
                 }
-                Err(e) => error!("An error occurred while intercepting the shutdown: {}", e),
-            }
-        })
-        .await?;
-
-    Ok(())
+                _ => debug!("Incoming event: {:?}", inc),
+            },
+            Outgoing(out) => debug!("Outgoing MQTT event: {:?}", out),
+        }
+    }
 }
