@@ -1,5 +1,5 @@
 pub use libasi_sys::efw::*;
-use log::{error};
+use log::error;
 
 pub type EFWInfo = _EFW_INFO;
 pub type EFWId = _EFW_ID;
@@ -27,16 +27,17 @@ pub fn get_num_of_connected_devices() -> i32 {
     unsafe { libasi_sys::efw::EFWGetNum() }
 }
 
-/***************************************************************************
-Descriptions:
-get the product ID of each wheel, at first set pPIDs as 0 and get length and then malloc a buffer to load the PIDs
-
-Paras:
-int* pPIDs: pointer to array of PIDs
-
-Return: length of the array.
-***************************************************************************/
-//EFW_API int EFWGetProductIDs(int* pPIDs);
+/// Returns the product IDs of all connected EFW devices.
+/// Deprecated by the SDK — prefer `EFWCheck` when available.
+pub fn get_product_ids() -> Vec<i32> {
+    let len = unsafe { libasi_sys::efw::EFWGetProductIDs(std::ptr::null_mut()) };
+    if len <= 0 {
+        return Vec::new();
+    }
+    let mut pids = vec![0i32; len as usize];
+    unsafe { libasi_sys::efw::EFWGetProductIDs(pids.as_mut_ptr()) };
+    pids
+}
 
 pub fn get_efw_id(index: i32, id: *mut i32) {
     check_error_code(
@@ -106,77 +107,49 @@ pub fn calibrate_wheel(id: i32) {
     );
 }
 
-/***************************************************************************
-Descriptions:
-close filter wheel
-
-Paras:
-int ID: the ID of filter wheel
-
-Return: 
-EFW_ERROR_INVALID_ID: invalid ID value
-EFW_SUCCESS: operation succeeds
-***************************************************************************/
 pub fn close_efw(id: i32) {
-    check_error_code(
-	unsafe { EFWClose(id) }
-    );
+    check_error_code(unsafe { EFWClose(id) });
 }
 
-/***************************************************************************
-Descriptions:
-get version string, like "0, 4, 0824"
-***************************************************************************/
-//EFW_API char* EFWGetSDKVersion();
+/// Returns the SDK version string, e.g. `"1, 8, 4"`.
+pub fn get_sdk_version() -> String {
+    let ptr = unsafe { libasi_sys::efw::EFWGetSDKVersion() };
+    if ptr.is_null() {
+        return String::from("UNKNOWN");
+    }
+    unsafe { std::ffi::CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned()
+}
 
+/// Retrieves the hardware-level firmware error code for the given device.
+pub fn get_hw_error_code(id: i32) -> i32 {
+    let mut err_code: i32 = 0;
+    check_error_code(unsafe { libasi_sys::efw::EFWGetHWErrorCode(id, &mut err_code) });
+    err_code
+}
 
-/***************************************************************************
-Descriptions:
-get hardware error code of filter wheel
+/// Retrieves the firmware version as `(major, minor, build)`.
+pub fn get_firmware_version(id: i32) -> (u8, u8, u8) {
+    let mut major: u8 = 0;
+    let mut minor: u8 = 0;
+    let mut build: u8 = 0;
+    check_error_code(unsafe {
+        libasi_sys::efw::EFWGetFirmwareVersion(id, &mut major, &mut minor, &mut build)
+    });
+    (major, minor, build)
+}
 
-Paras:
-int ID: the ID of filter wheel
+/// Retrieves the serial number of the EFW device.
+/// Returns `EFW_SN` which is an alias for `EFW_ID` (`[u8; 8]`).
+/// Note: returns `EFW_ERROR_NOT_SUPPORTED` on older firmware.
+pub fn get_serial_number(id: i32) -> EFWId {
+    let mut sn = EFWId::new();
+    check_error_code(unsafe { libasi_sys::efw::EFWGetSerialNumber(id, &mut sn) });
+    sn
+}
 
-bool *pErrCode: pointer to error code .
-
-Return: 
-EFW_ERROR_INVALID_ID: invalid ID value
-EFW_ERROR_CLOSED: not opened
-EFW_SUCCESS: operation succeeds
-***************************************************************************/
-//EFW_API EFW_ERROR_CODE EFWGetHWErrorCode(int ID, int *pErrCode);
-
-/***************************************************************************
-Descriptions:
-Get firmware version of filter wheel
-
-Paras:
-int ID: the ID of filter wheel
-
-int *major, int *minor, int *build: pointer to value.
-
-Return: 
-EFW_ERROR_INVALID_ID: invalid ID value
-EFW_ERROR_CLOSED: not opened
-EFW_SUCCESS: operation succeeds
-***************************************************************************/
-//EFW_API	EFW_ERROR_CODE EFWGetFirmwareVersion(int ID, unsigned char *major, unsigned char *minor, unsigned char *build);
-
-/***************************************************************************
-Descriptions:
-Get the serial number from a EFW
-
-Paras:
-int ID: the ID of focuser
-
-EFW_SN* pSN: pointer to SN
-
-Return: 
-EFW_ERROR_INVALID_ID: invalid ID value
-EFW_ERROR_CLOSED: not opened
-EFW_ERROR_NOT_SUPPORTED: the firmware does not support serial number
-EFW_SUCCESS: operation succeeds
-***************************************************************************/
-//EFW_API EFW_ERROR_CODE EFWGetSerialNumber(int ID, EFW_SN* pSN);
-
-//EFW_API EFW_ERROR_CODE EFWSetID(int ID, EFW_ID alias);
+/// Writes an 8-byte alias ID to the EFW device flash.
+pub fn set_id(id: i32, alias: EFWId) {
+    check_error_code(unsafe { libasi_sys::efw::EFWSetID(id, alias) });
+}
