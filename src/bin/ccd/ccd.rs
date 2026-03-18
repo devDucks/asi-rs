@@ -23,8 +23,8 @@ pub mod utils {
         use crate::utils::asi_id_to_string;
         use libasi::camera::{get_cam_id, set_cam_id, AsiID};
         use log::{debug, info};
-        use rand::distributions::Alphanumeric;
-        use rand::{thread_rng, Rng};
+        use rand::distr::Alphanumeric;
+        use rand::RngExt;
 
         pub fn get_camera_id(camera_index: i32) -> String {
             let mut id: AsiID = AsiID::new();
@@ -51,8 +51,8 @@ pub mod utils {
             match cam_id {
                 Some(i) => id.id = i,
                 None => {
-                    let rand_string: String = thread_rng()
-                        .sample_iter(&Alphanumeric)
+                    let rand_string: String = rand::rng()
+                        .sample_iter(Alphanumeric)
                         .take(8)
                         .map(char::from)
                         .collect();
