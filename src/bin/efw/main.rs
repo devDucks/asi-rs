@@ -22,11 +22,14 @@ struct AsiEfwDriver {
 impl AsiEfwDriver {
     fn new() -> Self {
         let found = efw::look_for_devices();
-        let mut devices = Vec::with_capacity(found as usize);
-        for idx in 0..found {
-            let device = Arc::new(RwLock::new(EfwDevice::new(idx)));
-            devices.push(device);
-        }
+        let devices = (0..found)
+            .filter_map(|idx| {
+                EfwDevice::new(idx)
+                    .map_err(|e| log::error!("Failed to initialize EFW device {idx}: {e}"))
+                    .ok()
+            })
+            .map(|d| Arc::new(RwLock::new(d)))
+            .collect();
         Self { devices }
     }
 }
@@ -130,7 +133,9 @@ async fn main() {
                                     task::spawn_blocking(move || {
                                         let efw_id = device.read().unwrap().efw_id();
                                         device.write().unwrap().calibrating = true;
-                                        libasi::efw::calibrate_wheel(efw_id);
+                                        if let Err(e) = libasi::efw::calibrate_wheel(efw_id) {
+                                            log::error!("Failed to calibrate EFW {efw_id}: {e}");
+                                        }
                                         while libasi::efw::check_wheel_is_moving(efw_id) {
                                             std::thread::sleep(Duration::from_millis(100));
                                         }
@@ -142,10 +147,7 @@ async fn main() {
                         }
                         "update" => {
                             let payload = String::from_utf8_lossy(&data.payload);
-                            info!(
-                                "Update request for {}: {}",
-                                device_id, payload
-                            );
+                            info!("Update request for {}: {}", device_id, payload);
                             // TODO: parse and dispatch generic property updates
                         }
                         _ => (),

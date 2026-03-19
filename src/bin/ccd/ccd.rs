@@ -1,6 +1,6 @@
 use crate::utils::fetch_control_caps;
 use crate::utils::get_num_of_controls;
-use libasi::camera::AsiCameraInfo;
+use libasi::camera::{AsiCameraError, AsiCameraInfo};
 
 use astrotools::properties::{Permission, Prop, Property, RangeProperty};
 use log::{debug, error, info};
@@ -21,14 +21,16 @@ pub mod utils {
 
     pub mod generics {
         use crate::utils::asi_id_to_string;
-        use libasi::camera::{get_cam_id, set_cam_id, AsiID};
+        use libasi::camera::{AsiID, get_cam_id, set_cam_id};
         use log::{debug, info};
-        use rand::distr::Alphanumeric;
         use rand::RngExt;
+        use rand::distr::Alphanumeric;
 
         pub fn get_camera_id(camera_index: i32) -> String {
             let mut id: AsiID = AsiID::new();
-            get_cam_id(camera_index, &mut id);
+            if let Err(e) = get_cam_id(camera_index, &mut id) {
+                log::error!("Failed to get camera ID for index {camera_index}: {e}");
+            }
 
             // if the AsiID is a bunch of 0, we set a random ID and we dump it to the camera flash
             // memory. If you are wondering why, the reason is the following; one may want to use multiple
@@ -69,15 +71,17 @@ pub mod utils {
                 camera_index,
                 asi_id_to_string(&id.id)
             );
-            set_cam_id(camera_index, id);
+            if let Err(e) = set_cam_id(camera_index, id) {
+                log::error!("Failed to set camera ID for index {camera_index}: {e}");
+            }
         }
     }
 
     pub mod capturing {
         use crate::ccd::Camera;
         use astrotools::properties::Prop;
-        use base64::prelude::BASE64_STANDARD;
         use base64::Engine;
+        use base64::prelude::BASE64_STANDARD;
         use libasi::camera::{
             download_exposure, exposure_status, set_control_value, start_exposure,
         };
@@ -122,34 +126,44 @@ pub mod utils {
             // Set the value of the exposure on the driver
             #[cfg(unix)]
             {
-                set_control_value(
+                if let Err(e) = set_control_value(
                     idx,
                     libasi::camera::ASI_CONTROL_TYPE_ASI_EXPOSURE as i32,
                     secs_to_micros,
                     libasi::camera::ASI_BOOL_ASI_FALSE as i32,
-                );
+                ) {
+                    error!("Failed to set exposure time: {e}");
+                    return;
+                }
             }
 
             #[cfg(windows)]
             {
-                set_control_value(
+                if let Err(e) = set_control_value(
                     idx,
                     libasi::camera::ASI_CONTROL_TYPE_ASI_EXPOSURE as i32,
                     secs_to_micros as i32,
                     0,
-                );
+                ) {
+                    error!("Failed to set exposure time: {e}");
+                    return;
+                }
             }
 
             // Send the command to start the exposure
-            start_exposure(idx);
-            exposure_status(idx, &mut status);
+            if let Err(e) = start_exposure(idx) {
+                error!("Failed to start exposure: {e}");
+                return;
+            }
+            let _ = exposure_status(idx, &mut status);
             let start = SystemTime::now();
             // Swapping exposure related properties AKA prepare props to show
             // informations about ongoing exposure
             {
                 let mut d = device.write().unwrap();
-		// TODO: Fix this unused result
-		let _ = d.exposure_status
+                // TODO: Fix this unused result
+                let _ = d
+                    .exposure_status
                     .update_int(std::borrow::Cow::Borrowed("EXPOSING"));
             }
 
@@ -157,7 +171,7 @@ pub mod utils {
 
             // Loop until the status change
             while status == 1 {
-                exposure_status(idx, &mut status);
+                let _ = exposure_status(idx, &mut status);
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
 
@@ -168,13 +182,19 @@ pub mod utils {
                     info!("Exposure successful");
                     {
                         let mut d = device.write().unwrap();
-			// TODO: Fix this unused result
-			let _ = d.exposure_status
+                        // TODO: Fix this unused result
+                        let _ = d
+                            .exposure_status
                             .update_int(std::borrow::Cow::Borrowed("SUCCESS"));
                     }
 
                     info!("downloading");
-                    download_exposure(idx, image_buffer.as_mut_ptr(), buffer_size.into());
+                    if let Err(e) =
+                        download_exposure(idx, image_buffer.as_mut_ptr(), buffer_size.into())
+                    {
+                        error!("Failed to download exposure: {e}");
+                        return;
+                    }
 
                     let mut mqttoptions = MqttOptions::new("asi_exposure", "127.0.0.1", 1883);
                     mqttoptions.set_keep_alive(Duration::from_secs(5));
@@ -245,31 +265,6 @@ pub mod utils {
             id.to_string()
         } else {
             String::from("UNKNOWN")
-        }
-    }
-
-    pub fn check_error_code(code: i32) {
-        match code {
-            0 => (),                                       //ASI_SUCCESS
-            1 => error!("ASI_ERROR_INVALID_INDEX"), //no camera connected or index value out of boundary
-            2 => error!("ASI_ERROR_INVALID_ID"),    //invalid ID
-            3 => error!("ASI_ERROR_INVALID_CONTROL_TYPE"), //invalid control type
-            4 => error!("ASI_ERROR_CAMERA_CLOSED"), //camera didn't open
-            5 => error!("ASI_ERROR_CAMERA_REMOVED"), //failed to find the camera, maybe the camera has been removed
-            6 => error!("ASI_ERROR_INVALID_PATH"),   //cannot find the path of the file
-            7 => error!("ASI_ERROR_INVALID_FILEFORMAT"),
-            8 => error!("ASI_ERROR_INVALID_SIZE"), //wrong video format size
-            9 => error!("ASI_ERROR_INVALID_IMGTYPE"), //unsupported image formate
-            10 => error!("ASI_ERROR_OUTOF_BOUNDARY"), //the startpos is out of boundary
-            11 => error!("ASI_ERROR_TIMEOUT"),     //timeout
-            12 => error!("ASI_ERROR_INVALID_SEQUENCE"), //stop capture first
-            13 => error!("ASI_ERROR_BUFFER_TOO_SMALL"), //buffer size is not big enough
-            14 => error!("ASI_ERROR_VIDEO_MODE_ACTIVE"),
-            15 => error!("ASI_ERROR_EXPOSURE_IN_PROGRESS"),
-            16 => error!("ASI_ERROR_GENERAL_ERROR"), //general error, eg: value is out of valid range
-            17 => error!("ASI_ERROR_INVALID_MODE"),  //the current mode is wrong
-            18 => error!("ASI_ERROR_END"),
-            e => error!("unknown error {}", e),
         }
     }
 
@@ -393,7 +388,10 @@ pub mod utils {
         for i in 0..num_of_caps {
             let mut control_caps = AsiControlCaps::new();
 
-            libasi::camera::get_control_caps(cam_idx, i, &mut control_caps);
+            if let Err(e) = libasi::camera::get_control_caps(cam_idx, i, &mut control_caps) {
+                log::error!("Failed to get control cap {i} for camera {cam_idx}: {e}");
+                continue;
+            }
 
             let cap = AsiProperty {
                 name: crate::utils::asi_name_to_string_i8(&control_caps.Name).to_case(Case::Snake),
@@ -415,7 +413,9 @@ pub mod utils {
     /// This method must be called AFTER the camera is initialized by the SDK
     pub fn get_num_of_controls(index: i32) -> i32 {
         let mut num_of_controls = 0;
-        libasi::camera::get_num_of_controls(index, &mut num_of_controls);
+        if let Err(e) = libasi::camera::get_num_of_controls(index, &mut num_of_controls) {
+            log::error!("Failed to get number of controls for camera {index}: {e}");
+        }
         info!("Found: {} controls for camera {}", num_of_controls, index);
         num_of_controls
     }
@@ -460,20 +460,20 @@ pub struct AsiCamera {
     lightspeed_id: Property<Cow<'static, str>>,
     // Properties to build logic around exposures
     exposing: Property<bool>,
-    exposure_status: Property<Cow<'static, str>>,
-    width: Property<i32>,
-    height: Property<i32>,
+    pub exposure_status: Property<Cow<'static, str>>,
+    pub width: Property<i32>,
+    pub height: Property<i32>,
     bin: Property<i32>,
     image_type: Property<i32>,
 }
 
 impl AsiCamera {
-    pub fn new(index: i32) -> Self {
+    pub fn new(index: i32) -> Result<Self, AsiCameraError> {
         // From the SDK documentation, in order:
         // 1) Get count of connected cameras (THIS IS DONE ALREADY as we already called look_for_devices
         // 2) get camera ID using ASIGetCameraProperty
         let mut info = AsiCameraInfo::new();
-        libasi::camera::get_camera_info(&mut info, index);
+        libasi::camera::get_camera_info(&mut info, index)?;
 
         debug!(
             "Saying welcome to camera `{}`",
@@ -481,10 +481,10 @@ impl AsiCamera {
         );
 
         // 3) Open camera using ASIOpenCamera
-        libasi::camera::open_camera(index);
+        libasi::camera::open_camera(index)?;
 
         // 4)Initialise the camera using ASIInitCamera
-        libasi::camera::init_camera(index);
+        libasi::camera::init_camera(index)?;
 
         // 5) Get count of control type with ASIGetControlCaps
         // Check how many capabilities this camera has, reallocate the vector
@@ -551,7 +551,7 @@ impl AsiCamera {
 
         device.asi_caps_to_lightspeed_props();
         device.fetch_roi_format();
-        device
+        Ok(device)
     }
 
     pub fn fetch_props(&mut self) {
@@ -563,8 +563,8 @@ impl AsiCamera {
             debug!("Cap {} value is  {}", &cap.name, &val);
             let v = self.controls.get_mut(&cap.name).unwrap();
             if v.value() != &val {
-		// TODO: Fix this unused error
-		let _ = v.update_int(val);
+                // TODO: Fix this unused error
+                let _ = v.update_int(val);
             }
         }
 
@@ -618,12 +618,14 @@ impl AsiCamera {
         let mut is_auto_set = 0;
         let mut val: i64 = 0;
 
-        libasi::camera::get_control_value(
+        if let Err(e) = libasi::camera::get_control_value(
             *self.index(),
             cap.control_type,
             &mut val,
             &mut is_auto_set,
-        );
+        ) {
+            error!("Failed to get control value for '{}': {e}", cap.name);
+        }
         debug!(
             "Value for {} is {} - Auto adjusted? {}",
             cap.name, val, cap.is_writable
@@ -634,7 +636,7 @@ impl AsiCamera {
     /// Close gently the connection to the camera using the SDK
     pub fn close(&self) {
         debug!("Closing camera {}", self.name);
-        libasi::camera::close_camera(*self.index());
+        let _ = libasi::camera::close_camera(*self.index());
     }
 
     fn fetch_roi_format(&mut self) {
@@ -644,13 +646,16 @@ impl AsiCamera {
         let mut bin = 10;
         let mut img_type = 10;
 
-        libasi::camera::get_roi_format(
+        if let Err(e) = libasi::camera::get_roi_format(
             *self.index(),
             &mut width,
             &mut height,
             &mut bin,
             &mut img_type,
-        );
+        ) {
+            error!("Failed to read ROI format: {e}");
+            return;
+        }
 
         // Update now the struct values
         self.width.update(width).unwrap();
@@ -696,6 +701,8 @@ impl AsiCamera {
             *self.image_type.value()
         };
 
-        libasi::camera::set_roi_format(*self.index(), w, h, b, img);
+        if let Err(e) = libasi::camera::set_roi_format(*self.index(), w, h, b, img) {
+            error!("Failed to set ROI format: {e}");
+        }
     }
 }
