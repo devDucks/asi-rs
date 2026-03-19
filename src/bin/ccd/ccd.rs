@@ -21,10 +21,10 @@ pub mod utils {
 
     pub mod generics {
         use crate::utils::asi_id_to_string;
-        use libasi::camera::{get_cam_id, set_cam_id, AsiID};
+        use libasi::camera::{AsiID, get_cam_id, set_cam_id};
         use log::{debug, info};
-        use rand::distr::Alphanumeric;
         use rand::RngExt;
+        use rand::distr::Alphanumeric;
 
         pub fn get_camera_id(camera_index: i32) -> String {
             let mut id: AsiID = AsiID::new();
@@ -80,8 +80,8 @@ pub mod utils {
     pub mod capturing {
         use crate::ccd::Camera;
         use astrotools::properties::Prop;
-        use base64::prelude::BASE64_STANDARD;
         use base64::Engine;
+        use base64::prelude::BASE64_STANDARD;
         use libasi::camera::{
             download_exposure, exposure_status, set_control_value, start_exposure,
         };
@@ -162,7 +162,8 @@ pub mod utils {
             {
                 let mut d = device.write().unwrap();
                 // TODO: Fix this unused result
-                let _ = d.exposure_status
+                let _ = d
+                    .exposure_status
                     .update_int(std::borrow::Cow::Borrowed("EXPOSING"));
             }
 
@@ -182,12 +183,15 @@ pub mod utils {
                     {
                         let mut d = device.write().unwrap();
                         // TODO: Fix this unused result
-                        let _ = d.exposure_status
+                        let _ = d
+                            .exposure_status
                             .update_int(std::borrow::Cow::Borrowed("SUCCESS"));
                     }
 
                     info!("downloading");
-                    if let Err(e) = download_exposure(idx, image_buffer.as_mut_ptr(), buffer_size.into()) {
+                    if let Err(e) =
+                        download_exposure(idx, image_buffer.as_mut_ptr(), buffer_size.into())
+                    {
                         error!("Failed to download exposure: {e}");
                         return;
                     }

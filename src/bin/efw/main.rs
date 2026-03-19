@@ -147,10 +147,7 @@ async fn main() {
                         }
                         "update" => {
                             let payload = String::from_utf8_lossy(&data.payload);
-                            info!(
-                                "Update request for {}: {}",
-                                device_id, payload
-                            );
+                            info!("Update request for {}: {}", device_id, payload);
                             // TODO: parse and dispatch generic property updates
                         }
                         _ => (),
