@@ -8,3 +8,4 @@ edition = "2024"
 [dependencies]
 libasi-sys = { version = "0.1.0", path = "../libasi-sys" }
 log = "0.4"
+thiserror = "1"

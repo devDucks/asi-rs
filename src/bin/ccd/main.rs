@@ -24,13 +24,14 @@ struct AsiCcd {
 impl AsiCcd {
     fn new() -> Self {
         let found = utils::look_for_devices();
-        let mut devices: Vec<Arc<RwLock<AsiCamera>>> = Vec::with_capacity(found as usize);
-
-        for idx in 0..found {
-            let device = Arc::new(RwLock::new(AsiCamera::new(idx)));
-            devices.push(device)
-        }
-
+        let devices = (0..found)
+            .filter_map(|idx| {
+                AsiCamera::new(idx)
+                    .map_err(|e| log::error!("Failed to initialize camera {idx}: {e}"))
+                    .ok()
+            })
+            .map(|d| Arc::new(RwLock::new(d)))
+            .collect();
         Self { devices }
     }
 }
